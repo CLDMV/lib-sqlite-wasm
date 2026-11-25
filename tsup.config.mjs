@@ -32,7 +32,8 @@ import { defineConfig } from "tsup";
 
 /** Node entries, keyed by their path under dist/ (without extension). Each has a hand-written `src/<name>.cjs` wrapper. */
 const entries = {
-	index: "src/index.mts"
+	index: "src/index.mts",
+	drizzle: "src/drizzle.mts"
 };
 
 /** Browser entries, ESM only (no CJS wrapper). */
