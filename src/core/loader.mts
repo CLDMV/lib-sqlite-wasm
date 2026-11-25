@@ -16,10 +16,15 @@
 /**
  * @fileoverview Compiles and instantiates sqlite3.wasm.
  *
+ * Node reads the file through a dynamic `import("node:fs/promises")`, reached only after an environment check; the
+ * browser bundles (dist/host.mjs, dist/worker.mjs) replace every `node:` module with a stub at build time, so they
+ * contain no Node import at all (tsup.config.mjs).
+ *
  * Nothing happens at import time: the package is also loaded through a require(esm) CJS wrapper, which cannot wait
  * for top-level await. The module is compiled on the first call to `loadSqliteModule()` and that promise is cached;
  * each `instantiateSqlite()` call then makes a fresh instance (its own memory and its own VFS driver).
  */
+import { load as browser } from "./browser-loader.mts";
 import { CallbackTable, createCallbackImports } from "./callbacks.mts";
 import { WasmMemory } from "./memory.mts";
 import { createVfsImports, type VfsDriver } from "./vfs-imports.mts";
@@ -130,9 +135,19 @@ export async function readWasm(base: string | URL): Promise<Uint8Array> {
 
 let defaultModule: Promise<WebAssembly.Module> | undefined;
 
-/** Compiles the package's own sqlite3.wasm once and caches the result. */
-export function loadSqliteModule(): Promise<WebAssembly.Module> {
-	defaultModule ??= readWasm(import.meta.url).then((bytes) => WebAssembly.compile(bytes as Uint8Array<ArrayBuffer>));
+/** Whether this is Node (and the wasm is read from disk) rather than a browser (where it is fetched). */
+export function isNode(scope: { process?: { versions?: { node?: unknown } } } = globalThis as never): boolean {
+	return typeof scope.process?.versions?.node === "string";
+}
+
+/**
+ * Compiles the package's own sqlite3.wasm once and caches the result: read with node:fs in Node, fetched and
+ * compiled while it streams in a browser (browser-loader.mts).
+ */
+export function loadSqliteModule(scope?: { process?: { versions?: { node?: unknown } } }): Promise<WebAssembly.Module> {
+	defaultModule ??= isNode(scope)
+		? readWasm(import.meta.url).then((bytes) => WebAssembly.compile(bytes as Uint8Array<ArrayBuffer>))
+		: browser();
 	return defaultModule;
 }
 

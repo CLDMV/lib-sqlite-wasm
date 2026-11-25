@@ -14,7 +14,7 @@
  */
 
 import { mkdirSync, rmSync } from "node:fs";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { checkImports, instantiateSqlite, loadSqliteModule, readWasm, wasmCandidates } from "../../src/core/loader.mts";
 import { CallbackTable, createCallbackImports } from "../../src/core/callbacks.mts";
 import { createVfsImports } from "../../src/core/vfs-imports.mts";
@@ -127,5 +127,30 @@ describe("loader", () => {
 		expect(sqlite.takeVfsError()).toBeUndefined();
 		exports.sqlite3_finalize(stmt);
 		exports.sqlite3_close_v2(db);
+	});
+});
+
+describe("loadSqliteModule outside Node", () => {
+	it("fetches the wasm with the browser loader when there is no Node", async () => {
+		const { isNode } = await import("../../src/core/loader.mts");
+		expect(isNode()).toBe(true);
+		expect(isNode({})).toBe(false);
+		expect(isNode({ process: { versions: {} } })).toBe(false);
+
+		vi.resetModules();
+		const fresh = await import("../../src/core/loader.mts");
+		const bytes = await readWasm(new URL("../../src/core/", import.meta.url));
+		const fetched = [];
+		vi.stubGlobal("fetch", async (url) => {
+			fetched.push(String(url));
+			return new Response(bytes, { headers: { "Content-Type": "application/wasm" } });
+		});
+		try {
+			const module = await fresh.loadSqliteModule({});
+			expect(module).toBeInstanceOf(WebAssembly.Module);
+			expect(fetched[0]).toMatch(/sqlite3\.wasm$/);
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

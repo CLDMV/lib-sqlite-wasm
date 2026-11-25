@@ -39,10 +39,21 @@ export interface Runtime {
 }
 
 let shared: Promise<Runtime> | undefined;
+let source: () => Promise<WebAssembly.Module> = loadSqliteModule;
+
+/**
+ * Sets where the compiled module comes from (the worker host passes its `wasm` option through here). Takes effect
+ * only before the first `sqlite.open()`; afterwards the instance exists and this returns false.
+ */
+export function use(loader: () => Promise<WebAssembly.Module>): boolean {
+	if (shared) return false;
+	source = loader;
+	return true;
+}
 
 /** The process-wide runtime, created on first use. */
 export function runtime(): Promise<Runtime> {
-	shared ??= loadSqliteModule().then(async (module) => {
+	shared ??= source().then(async (module) => {
 		const router = new VfsRouter(sharedMemory());
 		const instance = await instantiateSqlite(module, router);
 		return { instance, router, pending: undefined };
