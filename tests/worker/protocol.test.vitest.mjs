@@ -14,32 +14,20 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { error, label, revive, serialize } from "../../src/worker/protocol.mts";
-import { RawSqliteError } from "../../src/core/raw.mts";
-
-describe("result code names", () => {
-	it("names extended codes, falls back to the primary name, then UNKNOWN", () => {
-		expect(label(2067)).toBe("SQLITE_CONSTRAINT_UNIQUE");
-		expect(label(19)).toBe("SQLITE_CONSTRAINT");
-		expect(label(5 | (99 << 8))).toBe("SQLITE_BUSY");
-		expect(label(250)).toBe("SQLITE_UNKNOWN");
-	});
-});
+import { error, revive, serialize } from "../../src/worker/protocol.mts";
+import sqlite from "../../src/index.mts";
 
 describe("error", () => {
-	it("carries code, number and sql", () => {
-		const made = new error("boom", 2067, undefined, "insert");
-		expect(made).toBeInstanceOf(Error);
-		expect(made).toMatchObject({ name: "SqliteError", message: "boom", code: "SQLITE_CONSTRAINT_UNIQUE", number: 2067, sql: "insert" });
-		expect(new error("x", 5, "SQLITE_BUSY").sql).toBeUndefined();
+	it("is sqlite.error", () => {
+		expect(error).toBe(sqlite.error);
 	});
 });
 
 describe("serialize / revive", () => {
 	it("keeps SQLite errors as SQLite errors across the boundary", () => {
-		const wire = serialize(new RawSqliteError("UNIQUE constraint failed: t.a", 2067), "insert into t values (1)");
+		const wire = serialize(new error("UNIQUE constraint failed: t.a", 2067), "insert into t values (1)");
 		expect(wire).toEqual({
-			name: "SqliteError",
+			name: "sqlite.error",
 			message: "UNIQUE constraint failed: t.a",
 			code: "SQLITE_CONSTRAINT_UNIQUE",
 			number: 2067,
@@ -47,12 +35,14 @@ describe("serialize / revive", () => {
 		});
 		const back = revive(structuredClone(wire));
 		expect(back).toBeInstanceOf(error);
-		expect(back).toMatchObject({ code: "SQLITE_CONSTRAINT_UNIQUE", number: 2067, sql: "insert into t values (1)" });
+		expect(back).toMatchObject({ name: "sqlite.error", code: "SQLITE_CONSTRAINT_UNIQUE", number: 2067, sql: "insert into t values (1)" });
 	});
 
-	it("keeps an explicit code and leaves sql off when there is none", () => {
-		const busy = Object.assign(new Error("in another tab"), { code: "SQLITE_BUSY", number: 5 });
-		expect(serialize(busy)).toEqual({ name: "SqliteError", message: "in another tab", code: "SQLITE_BUSY", number: 5 });
+	it("prefers the error's own sql and leaves sql off when there is none", () => {
+		expect(serialize(new error("bad", 1, "select own"), "select call")).toMatchObject({ sql: "select own" });
+		const busy = Object.assign(new Error("in another tab"), { number: 5 });
+		expect(serialize(busy)).toEqual({ name: "sqlite.error", message: "in another tab", code: "SQLITE_BUSY", number: 5 });
+		expect(revive(serialize(busy)).sql).toBeUndefined();
 	});
 
 	it("sends other errors by name and message", () => {

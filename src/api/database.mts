@@ -182,6 +182,7 @@ export class database {
 		text(schema, "the schema");
 		const resolved = settings(path, { storage: options.storage ?? connection.storage });
 		const { name, release } = await claim(connection.runtime, resolved.storage, {
+			...connection.extra,
 			path,
 			readonly: connection.readonly,
 			create: connection.create,
@@ -192,7 +193,7 @@ export class database {
 			handle(connection);
 			query(connection, "ATTACH DATABASE ? AS ?", [name, schema]);
 		} catch (thrown) {
-			release();
+			await release();
 			throw thrown;
 		}
 		connection.routes.set(schema, release);
@@ -203,8 +204,9 @@ export class database {
 	async detach(schema: string): Promise<void> {
 		const connection = this.#connection;
 		query(connection, "DETACH DATABASE ?", [text(schema, "the schema")]);
-		connection.routes.get(schema)?.();
+		const release = connection.routes.get(schema);
 		connection.routes.delete(schema);
+		await release?.();
 	}
 
 	/**
@@ -217,7 +219,8 @@ export class database {
 		const schema = text(options.schema ?? "main", "the schema");
 		const destination = await connect(
 			target,
-			settings(target, { storage: options.storage ?? connection.storage, timeout: connection.timeout, lock: folder(connection.requested) })
+			settings(target, { storage: options.storage ?? connection.storage, timeout: connection.timeout, lock: folder(connection.requested) }),
+			connection.extra
 		);
 		const { exports, memory } = connection.runtime.instance;
 		try {
@@ -294,7 +297,7 @@ export class database {
 		connection.statements.clear();
 		exports.sqlite3_close_v2(connection.db);
 		connection.db = 0;
-		for (const release of connection.routes.values()) release();
+		connection.closed = Promise.all([...connection.routes.values()].map((release) => release())).then(() => {});
 		connection.routes.clear();
 	}
 }

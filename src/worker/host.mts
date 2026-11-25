@@ -19,68 +19,70 @@
  * In the worker file:
  *
  *     import host from "@cldmv/sqlite-wasm/host";
- *     host.listen();
+ *     host.listen(self, {
+ *         // Optional: runs after the database opens, with the full synchronous API. User-defined functions and
+ *         // collations are registered here, since they run in the worker.
+ *         setup(db) {
+ *             db.fn.scalar("slugify", (text) => text.toLowerCase().replaceAll(" ", "-"), { deterministic: true });
+ *         }
+ *     });
  *
- * The host owns one connection, on OPFS (or in memory), and answers the client's requests in arrival order. Requests
- * that pile up while it is busy are merged, and neighbouring INSERT/UPDATE/DELETE/SELECT statements from independent
- * calls run inside one transaction, so they cost one OPFS commit instead of one each. Every call still gets its own
- * result or error.
+ * The host owns one connection, opened with `sqlite.open()` on OPFS (or in memory), and answers the client's requests
+ * in arrival order. Requests that pile up while it is busy are merged, and neighbouring INSERT/UPDATE/DELETE/SELECT
+ * statements from independent calls run inside one transaction, so they cost one OPFS commit instead of one each.
+ * Every call still gets its own result or error. The connection settings (exclusive locking, journal mode,
+ * synchronous, foreign keys) are `sqlite.open()`'s, applied there.
  */
+import { SQLITE_MISUSE } from "../core/constants.mts";
 import { load, type source } from "../core/browser-loader.mts";
-import type { VfsDriver } from "../core/vfs-imports.mts";
-import { MemoryDriver } from "../vfs/memory.mts";
-import { create, type driver, type options as opfsoptions } from "../vfs/opfs.mts";
-import { open, type engine, type opening } from "./engine.mts";
+import { error } from "../api/error.mts";
+import type { database } from "../api/database.mts";
+import { use } from "../api/runtime.mts";
+import type { options as opfsoptions } from "../vfs/opfs.mts";
+import { open, type engine } from "./engine.mts";
 import { serialize, type call, type endpoint, type failure, type outcome, type request, type settings } from "./protocol.mts";
 
-/** Options for `listen()`: where the wasm comes from, plus the OPFS driver's options. */
-export interface options extends opfsoptions {
+/** Options for `listen()`: where the wasm comes from, the OPFS driver's options, and a hook run after open. */
+export interface options extends Omit<opfsoptions, "timeout"> {
 	/** sqlite3.wasm as a URL, bytes, a Response or a compiled module; the package's own file when omitted. */
 	wasm?: source;
+	/** Runs after each open with the database (register functions and collations here); a throw fails the open. */
+	setup?: (db: database) => unknown;
 }
 
 /** What the host depends on; `listen()` fills it in, tests swap parts out. */
 export interface dependencies {
-	module(): Promise<WebAssembly.Module>;
-	opfs(): driver;
-	connect(name: string, options: opening): Promise<engine>;
+	connect(path: string, settings: settings): Promise<engine>;
+	setup?: (db: database) => unknown;
 }
 
 /** Statements that may share a transaction with their neighbours. */
 const GROUPABLE = /^\s*(insert|update|delete|replace|select|with|values)\b/i;
 /** BEGIN variants a client may ask for. */
 const MODES = new Set(["deferred", "immediate", "exclusive"]);
-/** Journal modes and the synchronous level each gets by default. */
-const JOURNALS: Record<string, string> = { wal: "NORMAL", truncate: "FULL", delete: "FULL" };
 
 const succeed = (value: unknown): outcome => ({ ok: true, value });
-const reject = (error: unknown, sql?: string): outcome => ({ ok: false, error: serialize(error, sql) });
+const reject = (thrown: unknown, sql?: string): outcome => ({ ok: false, error: serialize(thrown, sql) });
 const sqlof = (item: call): string | undefined => ("sql" in item ? item.sql : undefined);
-
-/**
- * Applies the connection defaults: exclusive locking first (WAL needs it, since there is no shared memory), then the
- * journal mode, the matching synchronous level and foreign keys. The public `sqlite.open()` will own this.
- */
-function configure(db: engine, journal: string, readonly: boolean): void {
-	const sync = JOURNALS[journal];
-	if (!sync) throw new RangeError(`sqlite-wasm: unknown journal mode "${journal}" (use wal, truncate or delete)`);
-	db.execute("PRAGMA locking_mode = EXCLUSIVE");
-	if (!readonly) db.execute(`PRAGMA journal_mode = ${journal}; PRAGMA synchronous = ${sync}`);
-	db.execute("PRAGMA foreign_keys = ON");
-}
+/** A savepoint name as an SQL identifier. */
+const quoted = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 
 /** Answers requests arriving on `scope`. Returns a function that stops listening (the database stays as it is). */
 export function serve(scope: endpoint, dependencies: dependencies): () => void {
 	let db: engine | undefined;
-	let main: { name: string; opfs: driver | undefined } | undefined;
-	const attached = new Map<string, string>();
+	/** The client transaction: none, open, or aborted at a savepoint depth (0 is the transaction itself). */
 	let tx: "none" | "open" | "aborted" = "none";
+	/** Savepoints open inside the client transaction. */
+	let depth = 0;
+	/** The savepoint depth an abort applies to, savepoints the client opened after it, and the failure it reports. */
+	let abortedat = 0;
+	let skipped = 0;
 	let aborted: failure | undefined;
 	const queue: request[] = [];
 	let busy = false;
 
 	const need = (): engine => {
-		if (!db) throw Object.assign(new Error("sqlite-wasm: no database is open"), { number: 21 });
+		if (!db) throw new error("no database is open", SQLITE_MISUSE);
 		return db;
 	};
 
@@ -94,26 +96,14 @@ export function serve(scope: endpoint, dependencies: dependencies): () => void {
 				return need().statement(item.sql, item.params, item.shape, item.first);
 			case "columns":
 				return need().columns(item.sql);
-			case "attach": {
-				const connection = need();
-				const opfs = main?.opfs;
-				const name = opfs ? await opfs.prepare(item.path) : item.path;
-				try {
-					connection.statement("ATTACH DATABASE ? AS ?", [name, item.schema], "run", false);
-				} catch (error) {
-					await opfs?.release(name);
-					throw error;
-				}
-				if (opfs) attached.set(item.schema, name);
-				return undefined;
-			}
-			case "detach": {
-				need().statement("DETACH DATABASE ?", [item.schema], "run", false);
-				const name = attached.get(item.schema);
-				attached.delete(item.schema);
-				if (name !== undefined) await main?.opfs?.release(name);
-				return undefined;
-			}
+			case "attach":
+				return need().db.attach(item.path, item.schema);
+			case "detach":
+				return need().db.detach(item.schema);
+			case "backup":
+				return need().db.backup(item.target, item.schema === undefined ? {} : { schema: item.schema });
+			case "serialize":
+				return need().db.serialize(item.schema);
 			case "begin":
 				return need().execute(MODES.has(item.mode) ? `BEGIN ${item.mode.toUpperCase()}` : "BEGIN");
 			case "commit":
@@ -121,48 +111,40 @@ export function serve(scope: endpoint, dependencies: dependencies): () => void {
 			case "rollback":
 				if (!need().autocommit()) need().execute("ROLLBACK");
 				return undefined;
+			case "savepoint":
+				return need().execute(`SAVEPOINT ${quoted(item.name)}`);
+			case "release":
+				return need().execute(`RELEASE ${quoted(item.name)}`);
+			case "revert":
+				return need().execute(`ROLLBACK TO ${quoted(item.name)}; RELEASE ${quoted(item.name)}`);
 			case "close":
 				return closedb();
 			default:
-				throw new Error(`sqlite-wasm: unknown operation "${(item as { op: unknown }).op}"`);
+				throw new error(`unknown operation "${(item as { op: unknown }).op}"`, SQLITE_MISUSE);
 		}
 	};
 
-	const opendb = async (path: string, options: settings): Promise<{ path: string; storage: string }> => {
-		if (db) throw Object.assign(new Error("sqlite-wasm: a database is already open in this worker"), { number: 21 });
-		const storage = options.storage ?? "opfs";
-		const opfs = storage === "memory" ? undefined : dependencies.opfs();
-		const driver: VfsDriver = opfs ?? new MemoryDriver();
-		const name = opfs ? await opfs.prepare(path, { create: options.create !== false }) : path;
-		let connection: engine | undefined;
+	const opendb = async (path: string, options: settings): Promise<{ path: string; storage: string; lock: string }> => {
+		if (db) throw new error("a database is already open in this worker", SQLITE_MISUSE);
+		const connection = await dependencies.connect(path, options);
 		try {
-			connection = await dependencies.connect(name, {
-				module: await dependencies.module(),
-				driver,
-				readonly: options.readonly === true,
-				create: options.create !== false
-			});
-			configure(connection, options.journal ?? "wal", options.readonly === true);
-		} catch (error) {
-			connection?.close();
-			await opfs?.release(name);
-			throw error;
+			await dependencies.setup?.(connection.db);
+		} catch (thrown) {
+			await connection.close();
+			throw thrown;
 		}
 		db = connection;
-		main = { name, opfs };
 		tx = "none";
-		return { path: name, storage };
+		depth = 0;
+		const { info } = connection.db;
+		return { path: info.path, storage: info.storage, lock: info.lock };
 	};
 
 	const closedb = async (): Promise<void> => {
-		if (!db || !main) return;
-		db.close();
+		const closing = db?.close();
 		db = undefined;
-		const { name, opfs } = main;
-		main = undefined;
-		const names = [...attached.values(), name];
-		attached.clear();
-		for (const each of names) await opfs?.release(each);
+		// Answered once the files are released, so the client can reopen (here or in another tab) straight away.
+		await closing;
 	};
 
 	/** Runs consecutive groupable statements in one transaction, starting a new one if SQLite rolls one back. */
@@ -221,36 +203,72 @@ export function serve(scope: endpoint, dependencies: dependencies): () => void {
 		return results;
 	};
 
-	/** Calls inside a client transaction: after a failure the rest are skipped and the transaction is rolled back. */
+	/**
+	 * Calls inside a client transaction: after a failure the rest are skipped. A failure in the transaction itself
+	 * rolls it back; a failure inside a savepoint rolls back to that savepoint and skips only until the client closes
+	 * it, after which the outer transaction goes on.
+	 */
 	const transactional = async (items: call[]): Promise<outcome[]> => {
 		const results: outcome[] = [];
+		const abort = (result: outcome): void => {
+			tx = "aborted";
+			abortedat = depth;
+			skipped = 0;
+			aborted = (result as { error: failure }).error;
+		};
+		/** A call after a failure: skipped, except the calls that close the failed level. */
+		const skip = (item: call): outcome => {
+			const report: outcome =
+				item.op === "rollback" || item.op === "revert" ? succeed(undefined) : { ok: false, error: aborted as failure };
+			if (item.op === "savepoint") skipped++;
+			else if ((item.op === "release" || item.op === "revert") && skipped > 0) skipped--;
+			else if ((item.op === "release" || item.op === "revert") && abortedat > 0) {
+				// The failed savepoint closes: undo it, and the level around it goes on.
+				need().execute(`ROLLBACK TO ${quoted(item.name)}; RELEASE ${quoted(item.name)}`);
+				depth--;
+				tx = "open";
+			} else if (item.op === "commit" || item.op === "rollback") {
+				// Ending the transaction while a failed savepoint is still open: nothing of it may be kept. (A failure at the
+				// top level was rolled back already, and a failed BEGIN leaves a transaction that isn't this one's.)
+				if (abortedat > 0) need().execute("ROLLBACK");
+				tx = "none";
+			}
+			return report;
+		};
 		for (const item of items) {
 			if (item.op === "begin") {
 				try {
 					results.push(succeed(await perform(item)));
 					tx = "open";
-				} catch (error) {
-					const result = reject(error);
+					depth = 0;
+				} catch (thrown) {
+					const result = reject(thrown);
 					results.push(result);
-					tx = "aborted";
-					aborted = (result as { error: failure }).error;
+					depth = 0;
+					abort(result);
 				}
 				continue;
 			}
 			if (tx === "aborted") {
-				if (item.op === "rollback" || item.op === "commit") tx = "none";
-				results.push(item.op === "rollback" ? succeed(undefined) : { ok: false, error: aborted as failure });
+				results.push(skip(item));
 				continue;
 			}
 			try {
 				results.push(succeed(await perform(item)));
 				if (item.op === "commit" || item.op === "rollback") tx = "none";
-			} catch (error) {
-				const result = reject(error, sqlof(item));
+				if (item.op === "savepoint") depth++;
+				if (item.op === "release" || item.op === "revert") depth--;
+			} catch (thrown) {
+				const result = reject(thrown, sqlof(item));
 				results.push(result);
-				if (db && !db.autocommit()) db.execute("ROLLBACK");
-				tx = item.op === "commit" ? "none" : "aborted";
-				aborted = (result as { error: failure }).error;
+				if (item.op === "commit") {
+					if (db && !db.autocommit()) db.execute("ROLLBACK");
+					tx = "none";
+				} else if (depth > 0) abort(result);
+				else {
+					if (db && !db.autocommit()) db.execute("ROLLBACK");
+					abort(result);
+				}
 			}
 		}
 		return results;
@@ -272,7 +290,10 @@ export function serve(scope: endpoint, dependencies: dependencies): () => void {
 			}
 			let at = 0;
 			for (const each of batch) {
-				scope.postMessage({ id: each.id, outcomes: results.slice(at, (at += each.calls.length)) });
+				const outcomes = results.slice(at, (at += each.calls.length));
+				// A serialized database is handed over, not copied.
+				const transfer = outcomes.flatMap((result) => (result.ok && result.value instanceof Uint8Array ? [result.value.buffer] : []));
+				scope.postMessage({ id: each.id, outcomes }, transfer);
 			}
 		}
 		busy = false;
@@ -290,14 +311,16 @@ export function serve(scope: endpoint, dependencies: dependencies): () => void {
 /**
  * Starts answering the client. Call it once at the top of the worker file.
  * @param scope    where requests arrive; the worker's global scope by default
- * @param options  the wasm location and the OPFS driver's options
+ * @param options  the wasm location, the OPFS driver's options, and the `setup(db)` hook
  */
 export function listen(scope: endpoint = globalThis as unknown as endpoint, options: options = {}): () => void {
-	let driver: driver | undefined;
+	const { wasm, setup, ...driver } = options;
+	// The first open in this worker creates the shared module instance, from this wasm when one is given (otherwise
+	// the package's own file: fetched in a browser, read from disk in Node).
+	if (wasm !== undefined) use(() => load(wasm));
 	return serve(scope, {
-		module: () => load(options.wasm),
-		opfs: () => (driver ??= create(options)),
-		connect: open
+		connect: (path, settings) => open(path, { ...settings, storage: settings.storage ?? "opfs" }, driver),
+		...(setup === undefined ? {} : { setup })
 	});
 }
 

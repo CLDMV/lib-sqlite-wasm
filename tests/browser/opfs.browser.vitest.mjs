@@ -51,7 +51,7 @@ describe("OPFS in a worker", () => {
 	for (const journal of ["wal", "truncate"]) {
 		it(`creates, writes, closes and reopens a database in ${journal} mode`, async () => {
 			const db = await connect(`${journal}.db`, { journal });
-			expect(db.info).toMatchObject({ path: `/${journal}.db`, storage: "opfs" });
+			expect(db.info).toMatchObject({ path: `${journal}.db`, storage: "opfs", lock: "web" });
 			expect(await db.pragma.get("journal_mode")).toBe(journal);
 			await db.execute("create table t(id integer primary key, a text)");
 			await db.transaction((tx) => {
@@ -69,7 +69,7 @@ describe("OPFS in a worker", () => {
 
 	it("refuses a database another tab (here: another worker) has open, until it is closed", async () => {
 		const first = await connect("shared.db");
-		const failure = await client.connect(script, "shared.db").catch((thrown) => thrown);
+		const failure = await client.connect(script, "shared.db", { timeout: 0 }).catch((thrown) => thrown);
 		expect(failure).toBeInstanceOf(client.error);
 		expect(failure).toMatchObject({ code: "SQLITE_BUSY", number: 5 });
 		expect(failure.message).toMatch(/open in another tab/);

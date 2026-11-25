@@ -44,12 +44,19 @@ export interface Connection {
 	readonly requested: string;
 	/** The lock in effect for the main database ("beside", "temp", a folder, "db", "web" or "none"). */
 	readonly lock: string;
+	/** Driver options beyond the public ones (the worker host's OPFS root and lock manager), reused by attach and backup. */
+	readonly extra: Record<string, unknown>;
 	/** Run by `close()` before the connection closes (the "db" lock removes its row). */
 	readonly closing: (() => void)[];
 	/** Statements that are still prepared, finalized on close. */
 	readonly statements: Set<StatementState>;
-	/** Router registrations by schema ("main" and attached ones), released on detach and close. */
-	readonly routes: Map<string, () => void>;
+	/**
+	 * Router registrations by schema ("main" and attached ones), released on detach and close. Each release resolves
+	 * once the driver's own (possibly asynchronous) release has finished; it never rejects.
+	 */
+	readonly routes: Map<string, () => Promise<void>>;
+	/** Settles when everything `close()` released is released (the worker host waits for it before answering). */
+	closed: Promise<void>;
 }
 
 /** Throws unless the connection is open; returns its sqlite3* handle. */

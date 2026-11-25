@@ -140,7 +140,8 @@ function configure(connection: Connection, resolved: Settings): void {
 export interface Claim {
 	name: string;
 	lock: string;
-	release: () => void;
+	/** Undoes the claim at once; the promise settles when the driver's own release has finished (never rejects). */
+	release: () => Promise<void>;
 }
 
 /**
@@ -150,16 +151,18 @@ export interface Claim {
 export async function claim(shared: Runtime, storage: StorageKind, options: DriverOptions): Promise<Claim> {
 	const driver = await load(storage, options);
 	const name = driver.prepare ? await driver.prepare(options.path, options) : options.path;
-	const free = (): void => {
-		// Close is synchronous: a driver's asynchronous release can't be waited for, nor its failure reported.
-		Promise.resolve(driver.release?.(name)).catch(() => {});
-	};
+	const free = (): Promise<void> =>
+		// A driver's release failure has nowhere to go (close is synchronous); the promise only says when it is done.
+		Promise.resolve(driver.release?.(name)).then(
+			() => {},
+			() => {}
+		);
 	let unroute: () => void;
 	try {
 		// Keyed by storage kind: two connections to one file may each bring their own driver object of the same kind.
 		unroute = shared.router.register(name, driver, storage);
 	} catch (thrown) {
-		free();
+		await free();
 		throw new error((thrown as Error).message, SQLITE_CANTOPEN);
 	}
 	return {
@@ -167,16 +170,20 @@ export async function claim(shared: Runtime, storage: StorageKind, options: Driv
 		lock: driver.held?.(name) ?? "none",
 		release: () => {
 			unroute();
-			free();
+			return free();
 		}
 	};
 }
 
-/** Opens `path` with resolved settings and returns its connection state. */
-export async function connect(path: string, resolved: Settings): Promise<Connection> {
+/**
+ * Opens `path` with resolved settings and returns its connection state. `extra` goes to the driver factory along with
+ * the public options (the worker host passes its OPFS `root`, `locks` and `wait` this way).
+ */
+export async function connect(path: string, resolved: Settings, extra: Record<string, unknown> = {}): Promise<Connection> {
 	const shared = await runtime();
 	const { exports, memory } = shared.instance;
 	const claimed = await claim(shared, resolved.storage, {
+		...extra,
 		path,
 		readonly: resolved.readonly,
 		create: resolved.create,
@@ -196,7 +203,7 @@ export async function connect(path: string, resolved: Settings): Promise<Connect
 	if (rc !== SQLITE_OK) {
 		const failed = new error(memory.readCString(exports.sqlite3_errmsg(db)) as string, rc);
 		exports.sqlite3_close_v2(db);
-		release();
+		await release();
 		throw failed;
 	}
 	exports.sqlite3_busy_timeout(db, resolved.timeout);
@@ -213,9 +220,11 @@ export async function connect(path: string, resolved: Settings): Promise<Connect
 		bigint: resolved.bigint,
 		requested: resolved.lock,
 		lock: claimed.lock,
+		extra,
 		closing: [],
 		statements: new Set(),
-		routes: new Map([["main", release]])
+		routes: new Map([["main", release]]),
+		closed: Promise.resolve()
 	};
 	try {
 		// The "db" lock checks for another process before anything (the journal mode) is changed in the file.
@@ -225,7 +234,7 @@ export async function connect(path: string, resolved: Settings): Promise<Connect
 	} catch (thrown) {
 		exports.sqlite3_close_v2(db);
 		connection.db = 0;
-		release();
+		await release();
 		throw thrown;
 	}
 	return connection;
