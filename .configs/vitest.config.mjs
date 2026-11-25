@@ -33,6 +33,8 @@ export default defineConfig(({ mode }) =>
 			root,
 			test: {
 				include: ["tests/**/*.test.vitest.mjs"],
+				// The Node capabilities for tests that import src/ modules without going through src/index.mts.
+				setupFiles: ["tests/setup.mjs"],
 				exclude: ["node_modules"],
 				environment: "node",
 				testTimeout: 30000,

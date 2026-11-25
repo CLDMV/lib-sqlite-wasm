@@ -23,7 +23,12 @@
  *   node fs-child.mjs loop <db> <journal>     commit batches of 50 rows forever, print "running" after the first
  */
 import { createInterface } from "node:readline";
+// A child process gets no vitest setup file: it takes the Node capabilities the way the main entry does.
+import { provide } from "../../src/core/platform.mts";
+import { capabilities } from "../../src/node.mts";
 import { open } from "./fs-helpers.mjs";
+
+provide(capabilities);
 
 const [mode, path, extra] = process.argv.slice(2);
 

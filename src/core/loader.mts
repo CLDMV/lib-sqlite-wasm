@@ -16,15 +16,16 @@
 /**
  * @fileoverview Compiles and instantiates sqlite3.wasm.
  *
- * Node reads the file through a dynamic `import("node:fs/promises")`, reached only after an environment check; the
- * browser bundles (dist/host.mjs, dist/worker.mjs) replace every `node:` module with a stub at build time, so they
- * contain no Node import at all (tsup.config.mjs).
+ * Node reads the file from disk through the Node capabilities (core/platform.mts), reached only after an environment
+ * check; a browser fetches it (browser-loader.mts). This module imports no `node:` module itself, since the browser
+ * entries share it.
  *
  * Nothing happens at import time: the package is also loaded through a require(esm) CJS wrapper, which cannot wait
  * for top-level await. The module is compiled on the first call to `loadSqliteModule()` and that promise is cached;
  * each `instantiateSqlite()` call then makes a fresh instance (its own memory and its own VFS driver).
  */
 import { load as browser } from "./browser-loader.mts";
+import { node } from "./platform.mts";
 import { CallbackTable, createCallbackImports } from "./callbacks.mts";
 import { WasmMemory } from "./memory.mts";
 import { createVfsImports, type VfsDriver } from "./vfs-imports.mts";
@@ -120,11 +121,11 @@ export function wasmCandidates(base: string | URL): URL[] {
 
 /** Reads sqlite3.wasm from the first candidate location that exists (Node only). */
 export async function readWasm(base: string | URL): Promise<Uint8Array> {
-	const { readFile } = await import("node:fs/promises");
+	const { read } = node("reading sqlite3.wasm from disk");
 	const tried: string[] = [];
 	for (const url of wasmCandidates(base)) {
 		try {
-			return await readFile(url);
+			return await read(url);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			tried.push(url.pathname);

@@ -114,9 +114,9 @@ export interface endpoint {
 /**
  * The error a call rejects with on the client: `sqlite.error`, the same class the worker throws. An Error loses its
  * class and extra fields in postMessage (structured clone keeps only name and message), so the host sends the fields
- * and the client rebuilds the error from them. Each published entry bundles its own copy of the class, so an error
- * from `@cldmv/sqlite-wasm/worker` is an instance of that entry's `client.error`, not of the `sqlite.error` the main
- * entry exports; `code` and `number` are the same either way.
+ * and the client rebuilds the error from them. The published entries share one copy of the class (dist/ is built with
+ * code splitting), so `client.error` is `sqlite.error` and an error from `@cldmv/sqlite-wasm/worker` is an instance of
+ * the class the main entry exports.
  */
 export { error };
 

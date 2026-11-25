@@ -30,6 +30,7 @@ import { error } from "../api/error.mts";
 import { SQLITE_CANTOPEN } from "../core/constants.mts";
 import type { VfsDriver } from "../core/vfs-imports.mts";
 import { MemoryDriver } from "./memory.mts";
+import { node } from "../core/platform.mts";
 
 /** A concrete storage kind ("auto" resolves to one of these). */
 export type StorageKind = "memory" | "fs" | "opfs";
@@ -77,12 +78,12 @@ export function sharedMemory(): MemoryDriver {
 }
 
 /**
- * Driver loaders. Each driver module is imported on first use only, so a browser bundle never evaluates the node-fs
- * driver (the browser build swaps its `node:` imports for stubs, see tsup.config.mjs) and Node never loads OPFS code.
+ * Driver loaders. Each driver module is imported on first use only, so Node never loads OPFS code. The node-fs driver
+ * comes through the Node capabilities (core/platform.mts), so the browser entries' graph never reaches it.
  */
 const loaders: Record<StorageKind, () => Promise<DriverModule>> = {
 	memory: async () => ({ create: sharedMemory }),
-	fs: () => import("./fs.mts"),
+	fs: () => node('storage "fs"').fs(),
 	opfs: () => import("./opfs.mts")
 };
 

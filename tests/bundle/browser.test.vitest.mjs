@@ -14,9 +14,9 @@
  */
 
 /**
- * @fileoverview The browser bundles (dist/host.mjs, dist/worker.mjs) carry no Node import at all: tsup's `nodeless`
- * plugin replaces every `node:` module reached from the browser entries with a stub that throws when loaded. The
- * pretest script builds dist/ first.
+ * @fileoverview The browser entries (dist/host.mjs, dist/worker.mjs) reach no Node import at all, through any of the
+ * chunks they load: the shared code never imports a `node:` module (Node-only code is behind core/platform.mts, which
+ * only the Node entry fills in). The pretest script builds dist/ first.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -26,20 +26,32 @@ const dist = (name) => fileURLToPath(new URL(`../../dist/${name}`, import.meta.u
 
 /** `import ... from "node:x"`, `import("node:x")`, `require("node:x")` and bare `import "node:x"`, minified or not. */
 const NODE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'`]node:/;
+/** Static and dynamic imports of another file in dist/. */
+const LOCAL_IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*)["'`]\.\/([^"'`]+)["'`]/g;
+
+/** `name` and every dist/ file it imports, directly or through others. */
+function graph(name, seen = new Set()) {
+	if (seen.has(name)) return seen;
+	seen.add(name);
+	for (const [, next] of readFileSync(dist(name), "utf8").matchAll(LOCAL_IMPORT)) graph(next, seen);
+	return seen;
+}
 
 describe("browser bundles", () => {
 	for (const name of ["host.mjs", "worker.mjs"]) {
-		it(`${name} has no node: imports`, () => {
-			const code = readFileSync(dist(name), "utf8");
-			expect(code).not.toMatch(NODE_IMPORT);
+		it(`${name} and the chunks it loads have no node: imports`, () => {
+			const files = [...graph(name)];
+			expect(files.length).toBeGreaterThan(1);
+			for (const file of files) expect({ file, node: NODE_IMPORT.test(readFileSync(dist(file), "utf8")) }).toEqual({ file, node: false });
 		});
 	}
 
-	it("the Node bundle still imports node: modules (the check can see them)", () => {
-		expect(readFileSync(dist("index.mjs"), "utf8")).toMatch(NODE_IMPORT);
+	it("the Node entry's graph still imports node: modules (the check can see them)", () => {
+		expect([...graph("index.mjs")].some((file) => NODE_IMPORT.test(readFileSync(dist(file), "utf8")))).toBe(true);
 	});
 
-	it("the host bundle stubs the Node-only paths with a clear error", () => {
-		expect(readFileSync(dist("host.mjs"), "utf8")).toMatch(/sqlite-wasm: node:fs is not available in a browser/);
+	it("shares chunks between the entries", () => {
+		const host = graph("host.mjs");
+		expect([...graph("index.mjs")].filter((file) => file !== "index.mjs" && host.has(file))).not.toEqual([]);
 	});
 });

@@ -40,6 +40,7 @@ import { type Connection, execute, query } from "./connection.mts";
 import { database } from "./database.mts";
 import { error } from "./error.mts";
 import { type Runtime, runtime } from "./runtime.mts";
+import { node } from "../core/platform.mts";
 
 /** Where the database lives: "auto" picks files in Node, OPFS in a browser worker, memory elsewhere. */
 export type storage = "auto" | "memory" | "fs" | "opfs";
@@ -246,21 +247,7 @@ export const LOCK_TABLE = "_cldmv_lock";
 const LOCK_POLL = 25;
 
 /** This process's host name and a liveness check for a pid on it (Node only; the "db" lock exists only there). */
-async function processes(): Promise<{ host: string; alive(pid: number): boolean }> {
-	const os = await import("node:os");
-	return {
-		host: os.hostname(),
-		alive(pid: number): boolean {
-			try {
-				process.kill(pid, 0);
-				return true;
-			} catch (thrown) {
-				// EPERM: the process exists but belongs to another user.
-				return (thrown as NodeJS.ErrnoException).code === "EPERM";
-			}
-		}
-	};
-}
+const processes = (): Promise<{ host: string; alive(pid: number): boolean }> => node('the "db" lock').processes();
 
 /**
  * The "db" lock: a row in `_cldmv_lock` naming the process that has the database open. Opening refuses with

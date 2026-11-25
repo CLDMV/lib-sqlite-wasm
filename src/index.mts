@@ -27,6 +27,11 @@
  */
 import { error } from "./api/error.mts";
 import { open } from "./api/open.mts";
+import { provide } from "./core/platform.mts";
+import { capabilities } from "./node.mts";
+
+// The main entry runs in Node: the shared code reads the wasm from disk, opens files and checks processes through these.
+provide(capabilities);
 
 /** The package's API. */
 export interface sqlite {
