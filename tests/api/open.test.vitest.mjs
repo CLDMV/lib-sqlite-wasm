@@ -13,6 +13,9 @@
  *
  */
 
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryDriver } from "../../src/vfs/memory.mts";
 import { install, sharedMemory } from "../../src/vfs/registry.mts";
@@ -126,14 +129,29 @@ describe("sqlite.open", () => {
 		}
 	});
 
-	it("fails clearly for storage this build doesn't include", async () => {
-		for (const storage of ["fs", "opfs", "auto"]) {
-			const error = await rejected(sqlite.open(unique(), { storage }));
-			expect(error).toBeInstanceOf(sqlite.error);
-			expect(error.code).toBe("SQLITE_CANTOPEN");
-			expect(error.message).toMatch(/storage "(fs|opfs)" is not available in this build/);
-		}
-		expect((await rejected(sqlite.open(unique()))).message).toMatch(/"fs"/);
+	it("opens real files with storage fs, and with auto under Node", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "sqlite-wasm-open-"));
+		restore.push(() => rmSync(directory, { recursive: true, force: true }));
+		const path = join(directory, "auto.db");
+		const db = await sqlite.open(path, { journal: "delete" });
+		expect(db.info.storage).toBe("fs");
+		db.execute("create table t (x); insert into t values (1)");
+		// A second connection in this process brings its own fs driver object; both route to one file.
+		const second = await sqlite.open(path, { storage: "fs", journal: "delete", timeout: 0 });
+		expect(second.info.storage).toBe("fs");
+		second.close();
+		db.close();
+		expect(existsSync(path)).toBe(true);
+		const again = await sqlite.open(path, { storage: "fs" });
+		expect(again.prepare("select x from t").pluck.get()).toBe(1);
+		expect(again.pragma.get("journal_mode")).toBe("wal");
+		again.close();
+	});
+
+	it("fails clearly for OPFS outside a browser worker", async () => {
+		const error = await rejected(sqlite.open(unique(), { storage: "opfs" }));
+		expect(error).toBeInstanceOf(sqlite.error);
+		expect(error).toMatchObject({ code: "SQLITE_CANTOPEN", message: expect.stringMatching(/OPFS is not available/) });
 	});
 
 	it("validates its arguments", async () => {

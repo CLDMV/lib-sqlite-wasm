@@ -134,14 +134,15 @@ export interface Claim {
  */
 export async function claim(shared: Runtime, storage: StorageKind, options: DriverOptions): Promise<Claim> {
 	const driver = await load(storage, options);
-	const name = driver.prepare ? await driver.prepare(options.path, { create: options.create }) : options.path;
+	const name = driver.prepare ? await driver.prepare(options.path, options) : options.path;
 	const free = (): void => {
 		// Close is synchronous: a driver's asynchronous release can't be waited for, nor its failure reported.
 		Promise.resolve(driver.release?.(name)).catch(() => {});
 	};
 	let unroute: () => void;
 	try {
-		unroute = shared.router.register(name, driver);
+		// Keyed by storage kind: two connections to one file may each bring their own driver object of the same kind.
+		unroute = shared.router.register(name, driver, storage);
 	} catch (thrown) {
 		free();
 		throw new error((thrown as Error).message, SQLITE_CANTOPEN);

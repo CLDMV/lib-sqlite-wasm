@@ -29,7 +29,10 @@
  * files to get handles on them, and an empty `-wal` reported as existing would make SQLite switch a rollback-mode
  * database to WAL. Deleting a companion truncates it instead of removing it, since its handle stays open.
  */
+import { error } from "../api/error.mts";
 import {
+	SQLITE_BUSY,
+	SQLITE_CANTOPEN,
 	SQLITE_IOERR_SHORT_READ,
 	SQLITE_IOERR_WRITE,
 	SQLITE_OK,
@@ -41,8 +44,6 @@ import {
 import type { VfsDriver } from "../core/vfs-imports.mts";
 import { MemoryDriver } from "./memory.mts";
 
-/** SQLITE_BUSY: what a database held by another tab reports. */
-const BUSY = 5;
 /** The file can't be deleted while it is open (true for OPFS: a file with an open sync handle can't be removed). */
 const SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN = 0x00000800;
 /** Files a database needs on disk, as suffixes of its name. */
@@ -88,10 +89,12 @@ export interface options {
 	/** The Web Locks manager; `navigator.locks` when omitted. Pass `null` to rely on the exclusive sync handles alone. */
 	locks?: locks | null;
 	/**
-	 * How long `prepare()` waits, in milliseconds, for another tab to close the database. `0` (the default) fails at
-	 * once, `Infinity` waits for as long as it takes.
+	 * How long `prepare()` waits, in milliseconds, for another tab to close the database. `0` fails at once,
+	 * `Infinity` waits for as long as it takes. Defaults to `timeout`, else 0.
 	 */
 	wait?: number;
+	/** The open's busy timeout; `sqlite.open()` passes it, and it is the default for `wait`. */
+	timeout?: number;
 }
 
 /** Options for `prepare()`. */
@@ -109,6 +112,8 @@ export interface driver extends VfsDriver {
 	prepare(path: string, options?: preparation): Promise<string>;
 	/** Closes what `prepare()` opened and drops the lock. Call it after the connection is closed. */
 	release(path: string): Promise<void>;
+	/** The lock that keeps other tabs out: "web" with Web Locks, "none" when they are switched off (`locks: null`). */
+	held(): string;
 }
 
 /** A file SQLite sees as persistent, backed by an open sync access handle. */
@@ -124,14 +129,14 @@ interface database {
 	unlock: () => void;
 }
 
-/** An error that carries an SQLite code, so it reads like any other SQLite error after crossing a worker boundary. */
-function failure(message: string, number: number, code: string, cause?: unknown): Error {
-	return Object.assign(new Error(`sqlite-wasm: ${message}`, cause === undefined ? undefined : { cause }), { code, number });
+/** An `sqlite.error`, so a driver failure reads like any other SQLite error (and crosses a worker boundary as one). */
+function failure(message: string, number: number, cause?: unknown): error {
+	return new error(message, number, undefined, cause === undefined ? undefined : { cause });
 }
 
 /** The error for a database another tab (or another worker) holds. */
-function busy(name: string, cause?: unknown): Error {
-	return failure(`database "${name}" is open in another tab`, BUSY, "SQLITE_BUSY", cause);
+function busy(name: string, cause?: unknown): error {
+	return failure(`database "${name}" is open in another tab`, SQLITE_BUSY, cause);
 }
 
 /**
@@ -140,7 +145,7 @@ function busy(name: string, cause?: unknown): Error {
  */
 export function normalize(path: string): string {
 	const parts = path.split("/").filter((part) => part !== "" && part !== ".");
-	if (parts.length === 0 || parts.includes("..")) throw failure(`invalid OPFS path "${path}"`, 14, "SQLITE_CANTOPEN");
+	if (parts.length === 0 || parts.includes("..")) throw failure(`invalid OPFS path "${path}"`, SQLITE_CANTOPEN);
 	return `/${parts.join("/")}`;
 }
 
@@ -149,11 +154,15 @@ function ambient(): { storage?: { getDirectory(): Promise<directory> }; locks?: 
 	return (globalThis as unknown as { navigator?: ReturnType<typeof ambient> }).navigator;
 }
 
-/** Creates an OPFS driver. One driver can serve any number of databases; each database is opened by one connection. */
+/**
+ * Creates an OPFS driver. One driver can serve any number of databases; each database is opened by one connection.
+ * `sqlite.open()` calls it with its own options ({ path, readonly, create, timeout, lock }); everything this driver
+ * doesn't know is ignored, and `root` / `locks` fall back to the browser's own.
+ */
 export function create(options: options = {}): driver {
 	const memory = new MemoryDriver();
 	const lockmanager = options.locks === undefined ? ambient()?.locks : options.locks;
-	const wait = options.wait ?? 0;
+	const wait = options.wait ?? options.timeout ?? 0;
 	let root: Promise<directory> | undefined;
 	/** Persistent files by canonical name. */
 	const entries = new Map<string, entry>();
@@ -166,7 +175,7 @@ export function create(options: options = {}): driver {
 
 	const directoryroot = (): Promise<directory> => {
 		root ??= Promise.resolve(options.root ?? (ambient()?.storage?.getDirectory() as Promise<directory>)).then((found) => {
-			if (!found) throw failure("OPFS is not available here (no navigator.storage.getDirectory)", 14, "SQLITE_CANTOPEN");
+			if (!found) throw failure("OPFS is not available here (no navigator.storage.getDirectory)", SQLITE_CANTOPEN);
 			return found;
 		});
 		return root;
@@ -222,7 +231,7 @@ export function create(options: options = {}): driver {
 						found = await folder.getFileHandle(base + suffix, { create });
 					} catch (error) {
 						if ((error as { name?: string }).name === "NotFoundError")
-							throw failure(`database "${name}" does not exist`, 14, "SQLITE_CANTOPEN", error);
+							throw failure(`database "${name}" does not exist`, SQLITE_CANTOPEN, error);
 						throw error;
 					}
 					try {
@@ -268,6 +277,10 @@ export function create(options: options = {}): driver {
 			return done;
 		},
 
+		held(): string {
+			return lockmanager ? "web" : "none";
+		},
+
 		open(name: string | null, fileId: number, flags: number): number {
 			const found = name === null ? undefined : entries.get(name);
 			if (found) {
@@ -275,7 +288,7 @@ export function create(options: options = {}): driver {
 				return SQLITE_OK;
 			}
 			if (flags & (SQLITE_OPEN_MAIN_DB | SQLITE_OPEN_MAIN_JOURNAL | SQLITE_OPEN_WAL)) {
-				throw failure(`"${name}" was not prepared; await prepare() on the database before opening it`, 14, "SQLITE_CANTOPEN");
+				throw failure(`"${name}" was not prepared; await prepare() on the database before opening it`, SQLITE_CANTOPEN);
 			}
 			return memory.open(name, fileId, flags | SQLITE_OPEN_CREATE);
 		},

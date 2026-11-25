@@ -25,9 +25,10 @@
 import { SQLITE_OK } from "./constants.mts";
 import type { VfsDriver } from "./vfs-imports.mts";
 
-/** A registered name and how many registrations hold it. */
+/** A registered name, the key of the storage it belongs to, and how many registrations hold it. */
 interface Entry {
 	driver: VfsDriver;
+	key: unknown;
 	count: number;
 }
 
@@ -47,17 +48,21 @@ export class VfsRouter implements VfsDriver {
 	/**
 	 * Sends `name` (and the driver's full pathname for it) to `driver` until the returned function is called. Names are
 	 * reference counted, so two connections to the same database can each register and release it.
+	 *
+	 * `key` says which drivers are interchangeable for one name; it defaults to the driver itself. Drivers of one
+	 * storage kind that keep their per-file state process-wide (the node-fs driver) pass the kind, so two connections
+	 * to one file can each bring their own driver object; the name stays routed to the first one.
 	 */
-	register(name: string, driver: VfsDriver): () => void {
+	register(name: string, driver: VfsDriver, key: unknown = driver): () => void {
 		const names = [...new Set([name, driver.fullPathname(name)])];
 		for (const each of names) {
 			const entry = this.#names.get(each);
-			if (entry && entry.driver !== driver) throw new RouteConflict(`"${each}" is already open with another storage driver`);
+			if (entry && entry.key !== key) throw new RouteConflict(`"${each}" is already open with another storage driver`);
 		}
 		for (const each of names) {
 			const entry = this.#names.get(each);
 			if (entry) entry.count++;
-			else this.#names.set(each, { driver, count: 1 });
+			else this.#names.set(each, { driver, key, count: 1 });
 		}
 		let released = false;
 		return () => {

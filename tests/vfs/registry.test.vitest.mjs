@@ -25,7 +25,17 @@ describe("storage registry", () => {
 		expect(detect()).toBe("fs");
 		expect(detect({ process: { versions: { node: "26.0.0" } } })).toBe("fs");
 		expect(detect({ process: {}, FileSystemSyncAccessHandle: class {} })).toBe("opfs");
-		expect(detect({})).toBe("memory");
+		for (const scope of [{}, { process: {} }]) {
+			let caught;
+			try {
+				detect(scope);
+			} catch (thrown) {
+				caught = thrown;
+			}
+			expect(caught).toBeInstanceOf(error);
+			expect(caught.code).toBe("SQLITE_CANTOPEN");
+			expect(caught.message).toMatch(/dedicated browser worker.*storage: "memory"/);
+		}
 	});
 
 	it("knows the storage names", () => {
@@ -38,15 +48,37 @@ describe("storage registry", () => {
 		expect(sharedMemory()).toBeInstanceOf(MemoryDriver);
 	});
 
-	it("fails clearly for drivers not in this build", async () => {
-		for (const kind of ["fs", "opfs"]) {
-			const failure = await load(kind, options).then(
-				() => undefined,
-				(caught) => caught
-			);
-			expect(failure).toBeInstanceOf(error);
-			expect(failure).toMatchObject({ code: "SQLITE_CANTOPEN", message: `storage "${kind}" is not available in this build` });
-		}
+	it("loads the node-fs and OPFS driver modules", async () => {
+		const fs = await load("fs", options);
+		expect(typeof fs.open).toBe("function");
+		const opfs = await load("opfs", options);
+		expect(typeof opfs.prepare).toBe("function");
+		// No OPFS in Node: the driver loads, preparing a file fails clearly.
+		await expect(opfs.prepare("x.db", options)).rejects.toMatchObject({
+			code: "SQLITE_CANTOPEN",
+			message: expect.stringMatching(/OPFS is not available/)
+		});
+	});
+
+	it("turns a driver module that can't load here into a clear error", async () => {
+		const missing = new Error("Cannot find module 'node:fs'");
+		const previous = install("fs", () => Promise.reject(missing));
+		const failure = await load("fs", options).then(
+			() => undefined,
+			(caught) => caught
+		);
+		install("fs", previous);
+		expect(failure).toBeInstanceOf(error);
+		expect(failure).toMatchObject({
+			code: "SQLITE_CANTOPEN",
+			message: `storage "fs" is not available here: ${missing.message}`,
+			cause: missing
+		});
+		// An sqlite.error from a loader passes through unchanged.
+		const own = new error("nope", 14);
+		const opfs = install("opfs", () => Promise.reject(own));
+		await expect(load("opfs", options)).rejects.toBe(own);
+		install("opfs", opfs);
 	});
 
 	it("lets a loader be swapped and restored", async () => {
@@ -56,6 +88,6 @@ describe("storage registry", () => {
 		expect(await load("opfs", options)).toBe(driver);
 		expect(seen).toEqual([options]);
 		install("opfs", previous);
-		await expect(load("opfs", options)).rejects.toThrow(/not available/);
+		expect(await load("opfs", options)).not.toBe(driver);
 	});
 });

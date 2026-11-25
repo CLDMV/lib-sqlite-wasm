@@ -42,20 +42,22 @@ export interface DriverOptions {
 	readonly: boolean;
 	/** The file may be created. */
 	create: boolean;
-	/** Busy timeout in milliseconds. */
+	/** Busy timeout in milliseconds; also how long opening waits for another process or tab to let go. */
 	timeout: number;
 }
 
 /**
  * A driver as a module's `create()` returns it. Drivers whose files must be made ready asynchronously before SQLite
- * touches them (OPFS: a Web Lock plus sync access handles for the database, -journal and -wal) add two hooks:
- *   - `prepare(path, { create })` runs before sqlite3_open_v2 / ATTACH and resolves to the name SQLite opens;
+ * touches them (OPFS: a Web Lock plus sync access handles for the database, -journal and -wal) add hooks:
+ *   - `prepare(path, options)` runs before sqlite3_open_v2 / ATTACH and resolves to the name SQLite opens;
  *   - `release(name)` runs after sqlite3_close_v2 / DETACH (and when an open or attach fails after `prepare`). Close
- *     is synchronous, so a promise it returns is not awaited and its rejection is ignored.
+ *     is synchronous, so a promise it returns is not awaited and its rejection is ignored;
+ *   - `held(name)` reports the lock kind in effect for a prepared name (`db.info.lock`).
  */
 export interface StorageDriver extends VfsDriver {
-	prepare?(path: string, options: { create: boolean }): Promise<string>;
+	prepare?(path: string, options: DriverOptions): Promise<string>;
 	release?(name: string): unknown;
+	held?(name: string): string;
 }
 
 /** The shape of a driver module (src/vfs/<kind>.mts). */
@@ -71,19 +73,14 @@ export function sharedMemory(): MemoryDriver {
 	return memory;
 }
 
-/** A loader for a driver this build doesn't include yet. */
-function unavailable(kind: StorageKind): () => Promise<DriverModule> {
-	return () => Promise.reject(new error(`storage "${kind}" is not available in this build`, SQLITE_CANTOPEN));
-}
-
 /**
- * Driver loaders. The node-fs and OPFS drivers are added by their own modules; each becomes
- * `() => import("./fs.mts")` / `() => import("./opfs.mts")` once that file exists.
+ * Driver loaders. Each driver module is imported on first use only, so a browser bundle never evaluates the node-fs
+ * driver (the browser build swaps its `node:` imports for stubs, see tsup.config.mjs) and Node never loads OPFS code.
  */
 const loaders: Record<StorageKind, () => Promise<DriverModule>> = {
 	memory: async () => ({ create: sharedMemory }),
-	fs: unavailable("fs"),
-	opfs: unavailable("opfs")
+	fs: () => import("./fs.mts"),
+	opfs: () => import("./opfs.mts")
 };
 
 /**
@@ -102,11 +99,19 @@ export interface Environment {
 	FileSystemSyncAccessHandle?: unknown;
 }
 
-/** The storage "auto" means here: files in Node, OPFS in a browser worker, memory anywhere else. */
+/**
+ * The storage "auto" means here: files in Node, OPFS in a dedicated browser worker. Anywhere else (a browser main
+ * thread, a shared or service worker) there is no persistent synchronous storage, and "auto" refuses with an error
+ * that says what to do instead; `storage: "memory"` still works there.
+ */
 export function detect(scope: Environment = globalThis as Environment): StorageKind {
 	if (typeof scope.process?.versions?.node === "string") return "fs";
+	// FileSystemSyncAccessHandle is exposed in dedicated workers only.
 	if (typeof scope.FileSystemSyncAccessHandle === "function") return "opfs";
-	return "memory";
+	throw new error(
+		'storage "auto" needs Node.js or a dedicated browser worker with OPFS; on a browser main thread run the database in a worker (@cldmv/sqlite-wasm/worker), or pass storage: "memory"',
+		SQLITE_CANTOPEN
+	);
 }
 
 /** Whether `value` names a storage kind or "auto". */
@@ -116,6 +121,13 @@ export function isStorage(value: unknown): value is StorageKind | "auto" {
 
 /** Loads the driver module for `kind` and creates a driver for one database file. */
 export async function load(kind: StorageKind, options: DriverOptions): Promise<StorageDriver> {
-	const module = await loaders[kind]();
+	let module: DriverModule;
+	try {
+		module = await loaders[kind]();
+	} catch (thrown) {
+		if (thrown instanceof error) throw thrown;
+		// A driver whose runtime is missing here (node:fs in a browser bundle) fails on import.
+		throw new error(`storage "${kind}" is not available here: ${(thrown as Error).message}`, SQLITE_CANTOPEN, undefined, { cause: thrown });
+	}
 	return module.create(options);
 }
