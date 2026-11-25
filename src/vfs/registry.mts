@@ -44,11 +44,14 @@ export interface DriverOptions {
 	create: boolean;
 	/** Busy timeout in milliseconds; also how long opening waits for another process or tab to let go. */
 	timeout: number;
+	/** The cross-process lock: "beside", "temp", "db" or a folder path (node-fs only; other drivers ignore it). */
+	lock: string;
 }
 
 /**
  * A driver as a module's `create()` returns it. Drivers whose files must be made ready asynchronously before SQLite
- * touches them (OPFS: a Web Lock plus sync access handles for the database, -journal and -wal) add hooks:
+ * touches them (OPFS: a Web Lock plus sync access handles for the database, -journal and -wal; node-fs: the owner
+ * lock) add hooks:
  *   - `prepare(path, options)` runs before sqlite3_open_v2 / ATTACH and resolves to the name SQLite opens;
  *   - `release(name)` runs after sqlite3_close_v2 / DETACH (and when an open or attach fails after `prepare`). Close
  *     is synchronous, so a promise it returns is not awaited and its rejection is ignored;

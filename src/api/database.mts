@@ -20,7 +20,7 @@ import { SQLITE_DONE, SQLITE_ERROR, SQLITE_NOMEM } from "../core/constants.mts";
 import { type Connection, execute, failure, handle, inTransaction, prepareOne, query } from "./connection.mts";
 import { error } from "./error.mts";
 import { type fn, functions } from "./functions.mts";
-import { claim, connect, settings, type storage } from "./open.mts";
+import { claim, connect, LOCK_TABLE, settings, type storage } from "./open.mts";
 import { statement } from "./statement.mts";
 import { transaction } from "./transaction.mts";
 import type { value } from "./values.mts";
@@ -44,6 +44,11 @@ export interface info {
 	readonly path: string;
 	/** The storage driver it uses. */
 	readonly storage: string;
+	/**
+	 * The cross-process lock in effect: "beside", "temp", "db" or the folder given as `lock` (node-fs), "web" (OPFS
+	 * with Web Locks), "none" (memory). "beside" reads "temp" when it fell back.
+	 */
+	readonly lock: string;
 	/** Whether it is still open. */
 	readonly open: boolean;
 	/** Whether a transaction is open. */
@@ -93,6 +98,14 @@ function identifier(name: string): string {
 	return `"${name.replaceAll('"', '""')}"`;
 }
 
+/**
+ * The lock for an attached database or a backup target: the main database's own, except that the "db" lock (a row in
+ * the main database) becomes the default folder lock, since its row lives in one database only.
+ */
+function folder(requested: string): string {
+	return requested === "db" ? "beside" : requested;
+}
+
 /** Checks a string argument. */
 function text(input: unknown, what: string): string {
 	if (typeof input !== "string") throw new TypeError(`sqlite-wasm: ${what} must be a string`);
@@ -125,6 +138,7 @@ export class database {
 		this.info = Object.freeze({
 			path: connection.path,
 			storage: connection.storage,
+			lock: connection.lock,
 			get open() {
 				return connection.db !== 0;
 			},
@@ -171,7 +185,8 @@ export class database {
 			path,
 			readonly: connection.readonly,
 			create: connection.create,
-			timeout: connection.timeout
+			timeout: connection.timeout,
+			lock: folder(connection.requested)
 		});
 		try {
 			handle(connection);
@@ -202,7 +217,7 @@ export class database {
 		const schema = text(options.schema ?? "main", "the schema");
 		const destination = await connect(
 			target,
-			settings(target, { storage: options.storage ?? connection.storage, timeout: connection.timeout })
+			settings(target, { storage: options.storage ?? connection.storage, timeout: connection.timeout, lock: folder(connection.requested) })
 		);
 		const { exports, memory } = connection.runtime.instance;
 		try {
@@ -216,6 +231,10 @@ export class database {
 			const rc = exports.sqlite3_backup_step(backup, -1);
 			const finished = exports.sqlite3_backup_finish(backup);
 			if (rc !== SQLITE_DONE) throw failure(destination, finished);
+			// The copy carries the source's "db" lock rows, which name this process; the copy isn't held by anyone.
+			if (query(destination, "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?", [LOCK_TABLE]).length > 0) {
+				query(destination, `DELETE FROM ${LOCK_TABLE}`);
+			}
 		} finally {
 			new database(destination).close();
 		}
@@ -261,6 +280,13 @@ export class database {
 		const connection = this.#connection;
 		if (connection.db === 0) return;
 		const { exports } = connection.runtime.instance;
+		for (const hook of connection.closing.splice(0)) {
+			try {
+				hook();
+			} catch {
+				// Best effort: a lock row left behind names this process, which is stale once it exits.
+			}
+		}
 		for (const state of connection.statements) {
 			exports.sqlite3_finalize(state.pointer);
 			state.pointer = 0;

@@ -166,7 +166,9 @@ describe("sqlite.open", () => {
 			["x.db", { journal: "wal2" }, /journal must be one of wal, truncate, delete/],
 			["x.db", { sync: "fast" }, /sync must be one of/],
 			["x.db", { timeout: -1 }, /timeout must be a non-negative integer/],
-			["x.db", { timeout: 1.5 }, /timeout/]
+			["x.db", { timeout: 1.5 }, /timeout/],
+			["x.db", { lock: "" }, /lock must be "beside", "temp", "db" or a folder path/],
+			["x.db", { lock: 1 }, /lock must be/]
 		];
 		for (const [path, options, message] of cases) {
 			const error = await rejected(sqlite.open(path, options));
@@ -220,7 +222,7 @@ describe("sqlite.open", () => {
 		const name = unique("routed");
 		const db = await sqlite.open(name, { storage: "fs", timeout: 10 });
 		db.execute("create table t (x); insert into t values (1)");
-		expect(calls).toEqual([{ path: name, readonly: false, create: true, timeout: 10 }]);
+		expect(calls).toEqual([{ path: name, readonly: false, create: true, timeout: 10, lock: "beside" }]);
 		expect(driver.files()).toContain(name);
 		expect(files(name)).toEqual([]);
 		expect(db.info.storage).toBe("fs");

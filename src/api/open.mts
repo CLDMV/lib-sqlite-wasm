@@ -27,6 +27,7 @@
  *   4. `PRAGMA synchronous`, `PRAGMA foreign_keys`.
  */
 import {
+	SQLITE_BUSY,
 	SQLITE_CANTOPEN,
 	SQLITE_OK,
 	SQLITE_OPEN_CREATE,
@@ -67,7 +68,17 @@ export interface options {
 	timeout?: number;
 	/** Return every INTEGER as a bigint; default false (only integers outside ±2^53 are bigints). */
 	bigint?: boolean;
+	/**
+	 * How other processes are kept out (Node only; browsers always use Web Locks and ignore it): "beside" (default) a
+	 * `<db>.lock/` folder, falling back to "temp" where that can't be created; "temp" a folder under the OS temp
+	 * folder; a folder path of your own; or "db", a row in a `_cldmv_lock` table that detects a second process but
+	 * can't prevent two opening at the same instant.
+	 */
+	lock?: lock;
 }
+
+/** The `lock` option: "beside", "temp", "db", or a folder path. */
+export type lock = string;
 
 /** Fully resolved options. */
 export interface Settings {
@@ -79,6 +90,7 @@ export interface Settings {
 	foreign: boolean;
 	timeout: number;
 	bigint: boolean;
+	lock: string;
 }
 
 const JOURNALS: readonly string[] = ["wal", "truncate", "delete"];
@@ -102,7 +114,8 @@ export function settings(path: unknown, options: unknown): Settings {
 		sync = "normal",
 		foreign = true,
 		timeout = 5000,
-		bigint = false
+		bigint = false,
+		lock = "beside"
 	} = options as options;
 	if (!isStorage(storage)) throw new TypeError(`sqlite-wasm: unknown storage "${String(storage)}"`);
 	for (const [name, flag] of Object.entries({ readonly, create, foreign, bigint })) {
@@ -111,7 +124,8 @@ export function settings(path: unknown, options: unknown): Settings {
 	if (!JOURNALS.includes(journal)) throw new TypeError(`sqlite-wasm: journal must be one of ${JOURNALS.join(", ")}`);
 	if (!SYNCS.includes(sync)) throw new TypeError(`sqlite-wasm: sync must be one of ${SYNCS.join(", ")}`);
 	if (!Number.isSafeInteger(timeout) || timeout < 0) throw new TypeError("sqlite-wasm: timeout must be a non-negative integer");
-	return { storage: resolveStorage(path, storage), readonly, create: create && !readonly, journal, sync, foreign, timeout, bigint };
+	if (typeof lock !== "string" || lock === "") throw new TypeError('sqlite-wasm: lock must be "beside", "temp", "db" or a folder path');
+	return { storage: resolveStorage(path, storage), readonly, create: create && !readonly, journal, sync, foreign, timeout, bigint, lock };
 }
 
 /** Applies the connection settings (see the file overview for the order). */
@@ -122,9 +136,10 @@ function configure(connection: Connection, resolved: Settings): void {
 	execute(connection, `PRAGMA synchronous = ${resolved.sync}; PRAGMA foreign_keys = ${resolved.foreign ? "ON" : "OFF"}`);
 }
 
-/** A database file claimed for one connection or attachment: the name SQLite opens, and how to give it back. */
+/** A database file claimed for one connection or attachment: the name SQLite opens, the lock in effect, and how to give it back. */
 export interface Claim {
 	name: string;
+	lock: string;
 	release: () => void;
 }
 
@@ -149,6 +164,7 @@ export async function claim(shared: Runtime, storage: StorageKind, options: Driv
 	}
 	return {
 		name,
+		lock: driver.held?.(name) ?? "none",
 		release: () => {
 			unroute();
 			free();
@@ -164,7 +180,8 @@ export async function connect(path: string, resolved: Settings): Promise<Connect
 		path,
 		readonly: resolved.readonly,
 		create: resolved.create,
-		timeout: resolved.timeout
+		timeout: resolved.timeout,
+		lock: resolved.lock
 	});
 	const release = claimed.release;
 
@@ -194,11 +211,17 @@ export async function connect(path: string, resolved: Settings): Promise<Connect
 		timeout: resolved.timeout,
 		journal: resolved.journal,
 		bigint: resolved.bigint,
+		requested: resolved.lock,
+		lock: claimed.lock,
+		closing: [],
 		statements: new Set(),
 		routes: new Map([["main", release]])
 	};
 	try {
+		// The "db" lock checks for another process before anything (the journal mode) is changed in the file.
+		if (connection.lock === "db") await check(connection);
 		configure(connection, resolved);
+		if (connection.lock === "db" && !connection.readonly) await mark(connection);
 	} catch (thrown) {
 		exports.sqlite3_close_v2(db);
 		connection.db = 0;
@@ -206,6 +229,66 @@ export async function connect(path: string, resolved: Settings): Promise<Connect
 		throw thrown;
 	}
 	return connection;
+}
+
+/** The table the "db" lock keeps its rows in. */
+export const LOCK_TABLE = "_cldmv_lock";
+/** How often the "db" lock looks again while a live process's row is there, in ms. */
+const LOCK_POLL = 25;
+
+/** This process's host name and a liveness check for a pid on it (Node only; the "db" lock exists only there). */
+async function processes(): Promise<{ host: string; alive(pid: number): boolean }> {
+	const os = await import("node:os");
+	return {
+		host: os.hostname(),
+		alive(pid: number): boolean {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch (thrown) {
+				// EPERM: the process exists but belongs to another user.
+				return (thrown as NodeJS.ErrnoException).code === "EPERM";
+			}
+		}
+	};
+}
+
+/**
+ * The "db" lock: a row in `_cldmv_lock` naming the process that has the database open. Opening refuses with
+ * SQLITE_BUSY (after waiting up to `timeout`) while a row names another live process on this host. A writable open
+ * then removes the stale rows (dead processes, other hosts) and adds its own, which close removes again; a read-only
+ * open only checks. Other connections of this process don't count as a second process. This detects a second
+ * process; two processes opening at the same instant can both get through.
+ */
+async function check(connection: Connection): Promise<void> {
+	const { host, alive } = await processes();
+	// Locking first, as in configure(): a file in WAL mode only opens in exclusive mode.
+	execute(connection, "PRAGMA locking_mode = EXCLUSIVE");
+	const others = (): { pid: number; host: string }[] => {
+		if (query(connection, "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?", [LOCK_TABLE]).length === 0) return [];
+		const rows = query(connection, `SELECT pid, host FROM ${LOCK_TABLE}`) as { pid: number; host: string }[];
+		return rows.filter((each) => each.host === host && each.pid !== process.pid && alive(each.pid));
+	};
+	const deadline = Date.now() + connection.timeout;
+	for (let live = others(); live.length > 0; live = others()) {
+		if (Date.now() >= deadline) {
+			const [first] = live as [{ pid: number; host: string }];
+			throw new error(`database "${connection.path}" is open in process ${first.pid} on ${first.host} (lock "db")`, SQLITE_BUSY);
+		}
+		await new Promise((resolve) => setTimeout(resolve, LOCK_POLL));
+	}
+}
+
+/** Writes this connection's "db" lock row (see `check()`), removed again on close. */
+async function mark(connection: Connection): Promise<void> {
+	const { host } = await processes();
+	const started = new Date().toISOString();
+	execute(connection, `CREATE TABLE IF NOT EXISTS ${LOCK_TABLE} (pid INTEGER NOT NULL, host TEXT NOT NULL, started TEXT NOT NULL)`);
+	query(connection, `DELETE FROM ${LOCK_TABLE} WHERE host != ? OR pid != ?`, [host, process.pid]);
+	query(connection, `INSERT INTO ${LOCK_TABLE} (pid, host, started) VALUES (?, ?, ?)`, [process.pid, host, started]);
+	connection.closing.push(() => {
+		query(connection, `DELETE FROM ${LOCK_TABLE} WHERE pid = ? AND host = ? AND started = ?`, [process.pid, host, started]);
+	});
 }
 
 /** Opens a database. */

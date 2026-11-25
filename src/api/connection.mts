@@ -40,6 +40,12 @@ export interface Connection {
 	readonly timeout: number;
 	readonly journal: string;
 	readonly bigint: boolean;
+	/** The `lock` option as given (attachments and backups reuse it). */
+	readonly requested: string;
+	/** The lock in effect for the main database ("beside", "temp", a folder, "db", "web" or "none"). */
+	readonly lock: string;
+	/** Run by `close()` before the connection closes (the "db" lock removes its row). */
+	readonly closing: (() => void)[];
 	/** Statements that are still prepared, finalized on close. */
 	readonly statements: Set<StatementState>;
 	/** Router registrations by schema ("main" and attached ones), released on detach and close. */

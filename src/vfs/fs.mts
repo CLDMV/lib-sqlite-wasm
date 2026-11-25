@@ -29,6 +29,15 @@
  * Taking over a stale lock is itself serialized: the taker first claims `<db>.lock/reap` (the same kind of lock, one
  * level down), checks that the stale owner is still the one it saw, and only then removes the directory. Two takers
  * can't both remove it, and a taker that sees a fresh owner backs off.
+ *
+ * Where the owner lock lives is the `lock` option `sqlite.open()` passes to `prepare()` (DESIGN.md, "Lock option"):
+ *   - "beside" (default): `<db>.lock/`, falling back to "temp" when that folder can't be created (a read-only
+ *     database in a folder this process can't write to);
+ *   - "temp": `<os.tmpdir()>/cldmv-sqlite-locks/<sha256 of the real path>/`;
+ *   - a folder path: `<folder>/<sha256 of the real path>/`;
+ *   - "db": no folder at all; `sqlite.open()` keeps a row in a `_cldmv_lock` table instead (detects, doesn't prevent).
+ * The hash is of the file's resolved real path, so two paths to one file (a symlink, `..`) share one lock. A file
+ * opened without `prepare()` (the driver used on its own) gets the "beside" lock at open, as before.
  */
 import {
 	closeSync,
@@ -46,13 +55,16 @@ import {
 	rmSync,
 	statSync,
 	accessSync,
+	realpathSync,
 	unlinkSync,
 	writeFileSync,
 	writeSync
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { basename, dirname, join, resolve } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import { error } from "../api/error.mts";
 import {
 	SQLITE_ACCESS_EXISTS,
 	SQLITE_ACCESS_READWRITE,
@@ -87,6 +99,21 @@ export interface options {
 	timeout?: number;
 }
 
+/** Options for `prepare()`; `sqlite.open()` passes its own (path, readonly and create are not used here). */
+export interface preparation {
+	/** How long to wait for another process's lock, in ms; the driver's own timeout when omitted. */
+	timeout?: number;
+	/** "beside" (default), "temp", "db" or a folder path. */
+	lock?: string;
+}
+
+/** A database `prepare()` has set up: the lock kind in effect and its folder (none for "db"). */
+interface prepared {
+	kind: string;
+	directory: string | undefined;
+	count: number;
+}
+
 /** The contents of `owner.json`. */
 interface owner {
 	pid: number;
@@ -111,6 +138,8 @@ interface handle {
 
 /** Owner locks this process holds, by lock directory. */
 const owners = new Map<string, held>();
+/** Databases `prepare()` set up, by resolved path; shared by every driver object in the process. */
+const preparations = new Map<string, prepared>();
 /** SQLite lock levels per file path, then per file id; shared by every driver object in the process. */
 const levels = new Map<string, Map<number, number>>();
 /** Whether the exit handler that releases owner locks is registered. */
@@ -226,25 +255,8 @@ function claim(directory: string, root: string, record: owner): attempt {
 	return "retry";
 }
 
-/** Takes the owner lock for the database at `path`; false when another process kept it for `timeout` ms. */
-function acquire(path: string, timeout: number): string | undefined {
-	const directory = `${path}.lock`;
-	const existing = owners.get(directory);
-	if (existing) {
-		existing.count++;
-		return directory;
-	}
-	const record: owner = { pid: process.pid, hostname: hostname(), started: new Date().toISOString() };
-	const deadline = Date.now() + timeout;
-	for (;;) {
-		const result = claim(directory, directory, record);
-		if (result === "held") break;
-		if (result === "busy") {
-			const left = deadline - Date.now();
-			if (left <= 0) return undefined;
-			sleep(Math.min(POLL_MS, left));
-		}
-	}
+/** Records a lock directory this process now holds (or one more reference to it). */
+function hold(directory: string, record: owner): void {
 	owners.set(directory, { record, count: 1 });
 	if (!exitHook) {
 		exitHook = true;
@@ -253,8 +265,78 @@ function acquire(path: string, timeout: number): string | undefined {
 			for (const directory of [...owners.keys()]) release(directory, true);
 		});
 	}
+}
+
+/** A fresh owner record for this process. */
+function self(): owner {
+	return { pid: process.pid, hostname: hostname(), started: new Date().toISOString() };
+}
+
+/** One attempt at `directory` until it is either ours or held by a live owner. */
+function settle(directory: string, record: owner): "held" | "busy" {
+	for (;;) {
+		const result = claim(directory, directory, record);
+		if (result !== "retry") return result;
+	}
+}
+
+/** Takes the owner lock for the database at `path` (beside it); undefined when another process kept it for `timeout` ms. */
+function acquire(path: string, timeout: number): string | undefined {
+	const directory = `${path}.lock`;
+	const existing = owners.get(directory);
+	if (existing) {
+		existing.count++;
+		return directory;
+	}
+	const record = self();
+	const deadline = Date.now() + timeout;
+	while (settle(directory, record) === "busy") {
+		const left = deadline - Date.now();
+		if (left <= 0) return undefined;
+		sleep(Math.min(POLL_MS, left));
+	}
+	hold(directory, record);
 	return directory;
 }
+
+/** Like `acquire()`, for any lock directory, waiting without blocking the thread. False on timeout. */
+async function enter(directory: string, timeout: number): Promise<boolean> {
+	const existing = owners.get(directory);
+	if (existing) {
+		existing.count++;
+		return true;
+	}
+	const record = self();
+	const deadline = Date.now() + timeout;
+	while (settle(directory, record) === "busy") {
+		const left = deadline - Date.now();
+		if (left <= 0) return false;
+		await delay(Math.min(POLL_MS, left));
+	}
+	hold(directory, record);
+	return true;
+}
+
+/** The resolved real path of a database file, or of its folder plus its name when the file doesn't exist yet. */
+export function real(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		try {
+			return join(realpathSync(dirname(path)), basename(path));
+		} catch {
+			return path;
+		}
+	}
+}
+
+/** The lock folder for `path` under `parent`: named by the SHA-256 of the file's real path. */
+export function hashed(parent: string, path: string): string {
+	return join(parent, createHash("sha256").update(real(path)).digest("hex"));
+}
+
+/** Errors that mean "this folder can't be written here", for which "beside" falls back to "temp". */
+const UNWRITABLE = new Set(["EACCES", "EPERM", "EROFS"]);
 
 /** Drops one reference to an owner lock; the directory goes when the last one does (or at once with `all`). */
 function release(directory: string, all = false): void {
@@ -265,6 +347,11 @@ function release(directory: string, all = false): void {
 	owners.delete(directory);
 	// Only remove the directory while it is still ours.
 	if (same(readOwner(directory), entry.record)) remove(directory, directory);
+}
+
+/** The error for a database whose lock another live process kept for the whole timeout. */
+function busy(path: string, directory: string): error {
+	return new error(`database "${path}" is locked by another process (lock folder ${directory})`, SQLITE_BUSY);
 }
 
 /** The lock-level table for `path`. */
@@ -278,7 +365,7 @@ function table(path: string): Map<number, number> {
 }
 
 /** Driver for real files on disk. */
-class driver implements VfsDriver {
+export class driver implements VfsDriver {
 	readonly #timeout: number;
 	readonly #handles = new Map<number, handle>();
 
@@ -290,6 +377,75 @@ class driver implements VfsDriver {
 		const found = this.#handles.get(fileId);
 		if (!found) throw new Error(`fs driver: no open file with id ${fileId}`);
 		return found;
+	}
+
+	/**
+	 * Takes the owner lock of the kind `settings.lock` asks for and returns the name SQLite opens (the resolved path).
+	 * Waits for another process up to `settings.timeout`, then fails with SQLITE_BUSY.
+	 */
+	async prepare(path: string, settings: preparation = {}): Promise<string> {
+		const name = resolve(path);
+		try {
+			return await this.#prepare(name, settings);
+		} catch (thrown) {
+			if (thrown instanceof error) throw thrown;
+			// The lock folder couldn't be made at all (a missing parent folder, a file in the way).
+			throw new error(`cannot lock "${name}": ${(thrown as Error).message}`, SQLITE_CANTOPEN, undefined, { cause: thrown });
+		}
+	}
+
+	async #prepare(name: string, settings: preparation): Promise<string> {
+		const existing = preparations.get(name);
+		if (existing) {
+			if (existing.directory !== undefined) await enter(existing.directory, 0);
+			existing.count++;
+			return name;
+		}
+		const timeout = settings.timeout ?? this.#timeout;
+		const requested = settings.lock ?? "beside";
+		let kind = requested;
+		let directory: string | undefined;
+		if (requested !== "db") {
+			const temp = (): string => {
+				const parent = join(tmpdir(), "cldmv-sqlite-locks");
+				mkdirSync(parent, { recursive: true });
+				return hashed(parent, name);
+			};
+			if (requested === "beside") {
+				directory = `${name}.lock`;
+				try {
+					if (!(await enter(directory, timeout))) throw busy(name, directory);
+				} catch (thrown) {
+					if (!UNWRITABLE.has((thrown as NodeJS.ErrnoException).code as string)) throw thrown;
+					kind = "temp";
+					directory = undefined;
+				}
+			}
+			if (directory === undefined) {
+				if (kind === "temp") directory = temp();
+				else {
+					const parent = resolve(requested);
+					mkdirSync(parent, { recursive: true });
+					directory = hashed(parent, name);
+				}
+				if (!(await enter(directory, timeout))) throw busy(name, directory);
+			}
+		}
+		preparations.set(name, { kind, directory, count: 1 });
+		return name;
+	}
+
+	/** Drops what `prepare()` took for `name`. */
+	release(name: string): void {
+		const entry = preparations.get(name);
+		if (!entry) return;
+		if (entry.directory !== undefined) release(entry.directory);
+		if (--entry.count === 0) preparations.delete(name);
+	}
+
+	/** The lock kind in effect for a prepared `name` ("beside" for a file opened without `prepare()`). */
+	held(name: string): string {
+		return preparations.get(name)?.kind ?? "beside";
 	}
 
 	open(name: string | null, fileId: number, flags: number): number {
@@ -309,7 +465,8 @@ class driver implements VfsDriver {
 		const entry: handle = { fd, path, deleteOnClose: temporary || (flags & SQLITE_OPEN_DELETEONCLOSE) !== 0 };
 		try {
 			if (!existed && !entry.deleteOnClose) syncDirectory(dirname(path));
-			if (flags & SQLITE_OPEN_MAIN_DB) {
+			// A prepared database already holds its lock (or, for "db", deliberately none).
+			if (flags & SQLITE_OPEN_MAIN_DB && !preparations.has(path)) {
 				const lock = acquire(path, this.#timeout);
 				if (lock === undefined) {
 					closeSync(fd);
@@ -454,6 +611,6 @@ class driver implements VfsDriver {
  * Creates a driver for real files. One driver can serve any number of connections; locks are tracked per process.
  * @param settings  `timeout`: how long an open waits for another process's owner lock (ms, default 5000)
  */
-export function create(settings: options = {}): VfsDriver {
+export function create(settings: options = {}): driver {
 	return new driver(settings.timeout ?? DEFAULT_TIMEOUT);
 }
