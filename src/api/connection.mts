@@ -1,13 +1,13 @@
 /**
  *
  *	@Project: @cldmv/sqlite-wasm
- *	@Filename: /src/api/connection.mts
+ *	@Filename: src/api/connection.mts
  *	@Date: 2026-11-25T01:43:39-08:00 (1795599819)
  *	@Author: Nate Corcoran <CLDMV>
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T01:43:39-08:00 (1795599819)
+ *	@Last modified time: 2026-11-25T13:30:11-08:00 (1795642211)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *

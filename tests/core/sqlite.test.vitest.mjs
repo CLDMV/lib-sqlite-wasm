@@ -1,13 +1,13 @@
 /**
  *
  *	@Project: @cldmv/sqlite-wasm
- *	@Filename: /tests/core/sqlite.test.vitest.mjs
+ *	@Filename: tests/core/sqlite.test.vitest.mjs
  *	@Date: 2026-11-25T01:10:29-08:00 (1795597829)
  *	@Author: Nate Corcoran <CLDMV>
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T01:18:06-08:00 (1795598286)
+ *	@Last modified time: 2026-11-25T13:30:16-08:00 (1795642216)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
