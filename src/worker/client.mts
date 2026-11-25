@@ -25,9 +25,13 @@
  * Calls made in the same tick travel to the worker as one message. While a `transaction()` callback runs, every call
  * on the connection (through `tx` or `db`, including statements prepared earlier) joins that transaction. Calls the
  * callback makes without awaiting in between go out as one batch, and a callback that never awaits mid-way costs a
- * single message: BEGIN, its statements and COMMIT together. Transactions don't nest: starting one inside another's
- * callback waits for the outer one, which never finishes.
+ * single message: BEGIN, its statements and COMMIT together. A `transaction()` started while one runs becomes a
+ * savepoint inside it: a failure there undoes only the savepoint, and the outer callback can catch it and go on.
+ *
+ * User-defined functions and collations run in the worker, so `db.fn.*` isn't available here; register them in the
+ * host's `setup(db)` hook (see host.mts).
  */
+import { SQLITE_MISUSE } from "../core/constants.mts";
 import {
 	error,
 	revive,
@@ -108,17 +112,30 @@ export interface runner {
 /** The drizzle `sqlite-proxy` callback. */
 export type proxy = (sql: string, params: unknown[], method: "run" | "all" | "values" | "get") => Promise<{ rows: unknown }>;
 
+/** `db.fn` on the client: every method throws, since functions have to be registered in the worker. */
+export interface fn {
+	scalar(...ignored: unknown[]): never;
+	aggregate(...ignored: unknown[]): never;
+	agg(...ignored: unknown[]): never;
+	collation(...ignored: unknown[]): never;
+}
+
 /** A connection to a database in a worker. */
 export interface database extends transaction {
 	transaction: runner;
 	tx: runner;
+	fn: fn;
 	attach(path: string, schema: string): Promise<void>;
 	detach(schema: string): Promise<void>;
+	/** Copies the database (or the attached `options.schema`) into `target` in the worker's storage. */
+	backup(target: string, options?: { schema?: string }): Promise<void>;
+	/** The database (or attached `schema`) as the bytes of an SQLite file; the buffer is transferred from the worker. */
+	serialize(schema?: string): Promise<Uint8Array>;
 	checkpoint(mode?: "passive" | "full" | "restart" | "truncate"): Promise<row | undefined>;
 	ckpt(mode?: "passive" | "full" | "restart" | "truncate"): Promise<row | undefined>;
 	close(): Promise<void>;
 	proxy: proxy;
-	info: { readonly path: string; readonly storage: string; readonly open: boolean; readonly transaction: boolean };
+	info: { readonly path: string; readonly storage: string; readonly lock: string; readonly open: boolean; readonly transaction: boolean };
 }
 
 /** A call waiting to be sent, with its promise's settlers. */
@@ -133,8 +150,12 @@ const noop = (): void => {};
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/;
 const CHECKPOINTS = new Set(["passive", "full", "restart", "truncate"]);
 
-/** A misuse error (SQLITE_MISUSE), shaped like every other error the client rejects with. */
-const misuse = (message: string): error => new error(`sqlite-wasm: ${message}`, 21);
+/** A misuse error (SQLITE_MISUSE), the same class as every other error the client rejects with. */
+const misuse = (message: string): error => new error(message, SQLITE_MISUSE);
+
+/** Why `db.fn.*` throws on the client. */
+const FUNCTIONS =
+	"user-defined functions and collations run in the worker: register them in the host's setup hook, host.listen(self, { setup(db) { db.fn.scalar(...) } })";
 
 /** An SQL literal for a PRAGMA value. */
 function literal(item: value): string {
@@ -249,7 +270,7 @@ class link {
 }
 
 /** Wraps `connect()`'s channel in the database surface. */
-function wrap(channel: link, opened: { path: string; storage: string }): database {
+function wrap(channel: link, opened: { path: string; storage: string; lock: string }): database {
 	const send = (item: call): Promise<unknown> => channel.call(item);
 	/**
 	 * Runs `body` and returns its promise. A synchronous throw becomes a rejection, and inside a transaction the promise
@@ -345,9 +366,31 @@ function wrap(channel: link, opened: { path: string; storage: string }): databas
 
 	const tx: transaction = { prepare, prep: prepare, execute, exec: execute, pragma };
 
+	/** A transaction started inside a running one: a savepoint, undone on its own when its callback throws. */
+	let savepoints = 0;
+	const nested = async <result,>(callback: (tx: transaction) => Promise<result> | result): Promise<result> => {
+		const name = `sqlite_wasm_${++savepoints}`;
+		void send({ op: "savepoint", name });
+		let value: result;
+		try {
+			value = await callback(tx);
+		} catch (thrown) {
+			const revert = send({ op: "revert", name });
+			channel.flush();
+			await revert.catch(noop);
+			throw thrown;
+		}
+		// A failure inside the savepoint that the callback didn't wait for surfaces here; the host has undone it already.
+		const release = send({ op: "release", name });
+		channel.flush();
+		await release;
+		return value;
+	};
+
 	// Transactions run one after another; a second one waits for the first to settle.
 	let chain: Promise<unknown> = Promise.resolve();
 	const begin = <result,>(mode: string, callback: (tx: transaction) => Promise<result> | result): Promise<result> => {
+		if (channel.intx) return nested(callback);
 		const run = chain.then(async () => {
 			if (channel.closed) throw misuse("the database is closed");
 			// Calls queued before the transaction go out first, outside it.
@@ -402,6 +445,11 @@ function wrap(channel: link, opened: { path: string; storage: string }): databas
 		return { rows: await send({ op: "statement", sql, params: values, shape: "raw", first: false }) };
 	};
 
+	const unavailable = (): never => {
+		throw new error(FUNCTIONS, SQLITE_MISUSE);
+	};
+	const fn: fn = { scalar: unavailable, aggregate: unavailable, agg: unavailable, collation: unavailable };
+
 	return {
 		prepare,
 		prep: prepare,
@@ -410,12 +458,18 @@ function wrap(channel: link, opened: { path: string; storage: string }): databas
 		pragma,
 		transaction,
 		tx: transaction,
+		fn,
 		attach: async (path, schema) => {
 			await send({ op: "attach", path, schema });
 		},
 		detach: async (schema) => {
 			await send({ op: "detach", schema });
 		},
+		backup: async (target, options = {}) => {
+			await send(options.schema === undefined ? { op: "backup", target } : { op: "backup", target, schema: options.schema });
+		},
+		serialize: (schema) =>
+			attempt(() => send(schema === undefined ? { op: "serialize" } : { op: "serialize", schema }) as Promise<Uint8Array>),
 		checkpoint,
 		ckpt: checkpoint,
 		close: async () => {
@@ -427,6 +481,7 @@ function wrap(channel: link, opened: { path: string; storage: string }): databas
 		info: {
 			path: opened.path,
 			storage: opened.storage,
+			lock: opened.lock,
 			get open() {
 				return !channel.closed;
 			},
@@ -448,7 +503,7 @@ export async function connect(target: target, path: string, options: options = {
 	const started = typeof target === "string" || target instanceof URL ? new Worker(target, { type: "module" }) : undefined;
 	const channel = new link((started ?? target) as endpoint, started);
 	try {
-		const opened = (await channel.call({ op: "open", path, options })) as { path: string; storage: string };
+		const opened = (await channel.call({ op: "open", path, options })) as { path: string; storage: string; lock: string };
 		return wrap(channel, opened);
 	} catch (thrown) {
 		channel.end(thrown);

@@ -34,7 +34,10 @@ function channel(options = {}) {
 	return port1;
 }
 
-const memory = (name = "mem.db", options = {}) => connect(channel(), name, { storage: "memory", ...options });
+/** A memory database name no other test uses (the memory driver keeps a name's data for the whole process). */
+let counter = 0;
+const unique = () => `mem-${process.pid}-${++counter}.db`;
+const memory = (name = unique(), options = {}) => connect(channel(), name, { storage: "memory", ...options });
 
 afterEach(() => {
 	for (const port of ports.splice(0)) port.close();
@@ -60,8 +63,9 @@ describe("client surface", () => {
 	});
 
 	it("runs statements in every shape", async () => {
-		const db = await memory();
-		expect(db.info).toMatchObject({ path: "mem.db", storage: "memory", open: true, transaction: false });
+		const name = unique();
+		const db = await memory(name);
+		expect(db.info).toMatchObject({ path: name, storage: "memory", lock: "none", open: true, transaction: false });
 		await db.exec("create table t(id integer primary key, a, b)");
 		const insert = db.prep("insert into t(a, b) values (?, ?)");
 		expect(await insert.run("x", 1)).toEqual({ changes: 1, rowid: 1 });
@@ -270,7 +274,7 @@ describe("transactions", () => {
 			sent.push(message);
 			post(message);
 		};
-		const db = await connect(port, "mem.db", { storage: "memory" });
+		const db = await connect(port, unique(), { storage: "memory" });
 		await db.execute("create table t(a)");
 		sent.length = 0;
 		await db.transaction((tx) => {
@@ -371,7 +375,7 @@ describe("OPFS storage", () => {
 		it(`creates, writes, closes and reopens a database in ${journal} mode`, async () => {
 			const store = opfs();
 			const db = await store.open("data/app.db", { journal });
-			expect(db.info).toMatchObject({ path: "/data/app.db", storage: "opfs" });
+			expect(db.info).toMatchObject({ path: "data/app.db", storage: "opfs", lock: "web" });
 			expect(await db.pragma.get("journal_mode")).toBe(journal);
 			await db.execute("create table t(a)");
 			await db.transaction(async (tx) => {
@@ -404,7 +408,7 @@ describe("OPFS storage", () => {
 	it("refuses a database another tab has open", async () => {
 		const store = opfs();
 		const db = await store.open("app.db");
-		const failure = await store.open("app.db").catch((thrown) => thrown);
+		const failure = await store.open("app.db", { timeout: 0 }).catch((thrown) => thrown);
 		expect(failure).toBeInstanceOf(error);
 		expect(failure).toMatchObject({ code: "SQLITE_BUSY", number: 5 });
 		expect(failure.message).toMatch(/open in another tab/);
@@ -479,7 +483,7 @@ describe("worker targets", () => {
 
 	it("starts a module worker from a URL and terminates it on close", async () => {
 		vi.stubGlobal("Worker", fakeworker);
-		const db = await connect("https://app.test/db-worker.mjs", "mem.db", { storage: "memory" });
+		const db = await connect("https://app.test/db-worker.mjs", unique(), { storage: "memory" });
 		const worker = fakeworker.last;
 		expect(worker.url).toBe("https://app.test/db-worker.mjs");
 		expect(worker.options).toEqual({ type: "module" });
@@ -489,15 +493,15 @@ describe("worker targets", () => {
 
 	it("terminates the worker when opening fails", async () => {
 		vi.stubGlobal("Worker", fakeworker);
-		await expect(connect(new URL("https://app.test/w.mjs"), "mem.db", { storage: "memory", journal: "bogus" })).rejects.toThrow(
-			/unknown journal mode/
+		await expect(connect(new URL("https://app.test/w.mjs"), unique(), { storage: "memory", journal: "bogus" })).rejects.toThrow(
+			/journal must be one of wal, truncate, delete/
 		);
 		expect(fakeworker.last.terminated).toBe(true);
 	});
 
 	it("rejects pending calls when the worker fails", async () => {
 		vi.stubGlobal("Worker", fakeworker);
-		const db = await connect("https://app.test/w.mjs", "mem.db", { storage: "memory" });
+		const db = await connect("https://app.test/w.mjs", unique(), { storage: "memory" });
 		const worker = fakeworker.last;
 		const pending = db.execute("select 1");
 		worker.errors[0]({ message: "script error" });
@@ -509,11 +513,108 @@ describe("worker targets", () => {
 
 	it("reports a worker failure without a message", async () => {
 		vi.stubGlobal("Worker", fakeworker);
-		const db = await connect("https://app.test/w.mjs", "mem.db", { storage: "memory" });
+		const db = await connect("https://app.test/w.mjs", unique(), { storage: "memory" });
 		const pending = db.execute("select 1");
 		// Let the call go out first, so it is waiting on an answer rather than still queued.
 		await Promise.resolve();
 		fakeworker.last.errors[0]({});
 		await expect(pending).rejects.toThrow(/^sqlite-wasm: the worker failed$/);
+	});
+});
+
+describe("nested transactions, backup, serialize and functions", () => {
+	it("runs a transaction started inside another as a savepoint", async () => {
+		const db = await memory();
+		await db.execute("create table t(a unique)");
+		const result = await db.transaction(async (tx) => {
+			await tx.prepare("insert into t values (?)").run(1);
+			// A nested transaction that commits keeps its rows.
+			expect(await db.transaction(async (inner) => (await inner.prepare("insert into t values (?)").run(2)).changes)).toBe(1);
+			// One that fails is undone on its own; the outer callback catches the error and carries on.
+			const failure = await db.transaction
+				.immediate(async (inner) => {
+					await inner.prepare("insert into t values (?)").run(3);
+					await inner.prepare("insert into t values (?)").run(1);
+				})
+				.catch((thrown) => thrown);
+			expect(failure).toBeInstanceOf(error);
+			expect(failure.code).toBe("SQLITE_CONSTRAINT_UNIQUE");
+			// A nested callback that throws on its own is undone too.
+			await expect(
+				db.tx(async (inner) => {
+					await inner.prepare("insert into t values (?)").run(4);
+					throw new Error("changed my mind");
+				})
+			).rejects.toThrow("changed my mind");
+			return "done";
+		});
+		expect(result).toBe("done");
+		expect(await db.prepare("select a from t order by a").pluck.all()).toEqual([1, 2]);
+		await db.close();
+	});
+
+	it("reports a nested failure the callback didn't wait for when the savepoint closes", async () => {
+		const db = await memory();
+		await db.execute("create table t(a unique); insert into t values (1)");
+		const failure = await db
+			.transaction(async () => {
+				await db.transaction((inner) => {
+					// Not awaited: the savepoint closes with RELEASE and learns of the failure then.
+					inner.prepare("insert into t values (?)").run(1);
+				});
+			})
+			.catch((thrown) => thrown);
+		expect(failure).toMatchObject({ code: "SQLITE_CONSTRAINT_UNIQUE" });
+		expect(await db.prepare("select count(*) from t").pluck.get()).toBe(1);
+		await db.close();
+	});
+
+	it("backs up and serializes in the worker", async () => {
+		const db = await memory();
+		await db.execute("create table t(a); insert into t values (1), (2)");
+		const copy = unique();
+		await db.backup(copy);
+		await db.execute("attach ':memory:' as side; create table side.s(b)");
+		await db.backup(unique(), { schema: "side" });
+		const bytes = await db.serialize();
+		expect(bytes).toBeInstanceOf(Uint8Array);
+		expect(new TextDecoder().decode(bytes.subarray(0, 15))).toBe("SQLite format 3");
+		expect((await db.serialize("side")).length).toBeGreaterThan(0);
+		await expect(db.serialize("nope")).rejects.toMatchObject({ code: "SQLITE_ERROR" });
+		await db.close();
+		const restored = await memory(copy);
+		expect(await restored.prepare("select count(*) from t").pluck.get()).toBe(2);
+		await restored.close();
+	});
+
+	it("refuses fn.* with an explanation, and registers functions through the host's setup hook", async () => {
+		const db = await memory();
+		expect(db.fn.agg).toBe(db.fn.aggregate);
+		for (const register of [db.fn.scalar, db.fn.aggregate, db.fn.collation]) {
+			let thrown;
+			try {
+				register("x", () => 1);
+			} catch (caught) {
+				thrown = caught;
+			}
+			expect(thrown).toBeInstanceOf(error);
+			expect(thrown).toMatchObject({ code: "SQLITE_MISUSE", message: expect.stringMatching(/run in the worker.*setup/) });
+		}
+		await db.close();
+
+		const seen = [];
+		const withfn = await connect(
+			channel({
+				setup(database) {
+					seen.push(database.info.path);
+					database.fn.scalar("twice", (value) => value * 2);
+				}
+			}),
+			unique(),
+			{ storage: "memory" }
+		);
+		expect(await withfn.prepare("select twice(21) as v").pluck.get()).toBe(42);
+		expect(seen).toHaveLength(1);
+		await withfn.close();
 	});
 });
