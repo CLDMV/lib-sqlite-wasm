@@ -229,6 +229,22 @@ function digest(algorithm, data) {
 }
 
 /**
+ * Reads `file`; undefined when it doesn't exist. Read in one step, so there is no window between checking for the file
+ * and reading it.
+ * @param {string} file
+ * @param {BufferEncoding} [encoding]
+ * @returns {any}
+ */
+function readIfPresent(file, encoding) {
+	try {
+		return readFileSync(file, encoding);
+	} catch (error) {
+		if (/** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+/**
  * Downloads `url` to `file` unless a copy with the expected hash is already there.
  * @param {string} url
  * @param {string} file
@@ -236,7 +252,8 @@ function digest(algorithm, data) {
  * @param {string} expected   lowercase hex digest
  */
 async function download(url, file, algorithm, expected) {
-	if (existsSync(file) && digest(algorithm, readFileSync(file)) === expected) return;
+	const present = readIfPresent(file);
+	if (present !== undefined && digest(algorithm, present) === expected) return;
 	const data = await fetchWithRetry(url, { log });
 	const actual = digest(algorithm, data);
 	if (actual !== expected) throw new Error(`build-wasm: ${url}: ${algorithm} mismatch (expected ${expected}, got ${actual})`);
@@ -302,7 +319,7 @@ async function toolchain(name, pin) {
 	if (!asset) throw new Error(`build-wasm: no pinned ${name} for ${hostKey()}`);
 	const home = path.join(toolchainDir, `${name}-${pin.version}-${hostKey()}`);
 	const marker = path.join(home, ".complete");
-	if (existsSync(marker) && readFileSync(marker, "utf8") === asset.sha256) return path.join(home, asset.dir);
+	if (readIfPresent(marker, "utf8") === asset.sha256) return path.join(home, asset.dir);
 	const archive = path.join(toolchainDir, "downloads", path.basename(new URL(asset.url).pathname));
 	await download(asset.url, archive, "sha256", asset.sha256);
 	log(`extracting ${path.basename(archive)}`);
@@ -323,7 +340,7 @@ async function amalgamation() {
 	const stamp = digest("sha256", Buffer.from(JSON.stringify({ sha3_256: pin.sha3_256, GENERATOR_FLAGS }))).slice(0, 16);
 	const dir = path.join(toolchainDir, `sqlite-${version}-amalgamation`);
 	const marker = path.join(dir, ".complete");
-	if (existsSync(marker) && readFileSync(marker, "utf8") === stamp) return dir;
+	if (readIfPresent(marker, "utf8") === stamp) return dir;
 
 	const archive = path.join(toolchainDir, "downloads", path.basename(new URL(pin.url).pathname));
 	await download(pin.url, archive, "sha3-256", pin.sha3_256);
