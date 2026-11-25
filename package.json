@@ -57,6 +57,22 @@
 			"import": "./dist/index.mjs",
 			"require": "./dist/index.cjs"
 		},
+		"./host": {
+			"sqlite-wasm-dev": {
+				"types": "./src/worker/host.mts",
+				"import": "./src/worker/host.mts"
+			},
+			"types": "./types/src/worker/host.d.mts",
+			"import": "./dist/host.mjs"
+		},
+		"./worker": {
+			"sqlite-wasm-dev": {
+				"types": "./src/worker/client.mts",
+				"import": "./src/worker/client.mts"
+			},
+			"types": "./types/src/worker/client.d.mts",
+			"import": "./dist/worker.mjs"
+		},
 		"./package.json": "./package.json"
 	},
 	"engines": {
@@ -80,6 +96,7 @@
 		"test": "node tests/run-vitest.mjs && npm run test:cjs && npm run test:dist",
 		"test:cjs": "npm run build && node --test tests/cjs/entry.test.cjs",
 		"test:dist": "npm run build && node tests/run-vitest.mjs --mode=dist",
+		"test:browser": "playwright install chromium-headless-shell && vitest run --config .configs/vitest.browser.config.mjs",
 		"test:watch": "vitest --config .configs/vitest.config.mjs",
 		"coverage": "node tests/run-vitest.mjs --coverage-quiet",
 		"ci:coverage": "npm run coverage && npm run test:cjs && npm run test:dist",
@@ -105,9 +122,11 @@
 		"@eslint/json": "^2.1.1",
 		"@eslint/markdown": "^9.0.0",
 		"@types/node": "^26.6.10",
+		"@vitest/browser-playwright": "^5.1.1",
 		"@vitest/coverage-v8": "^5.1.1",
 		"eslint": "^10.15.0",
 		"globals": "^17.14.0",
+		"playwright": "^1.65.1",
 		"prettier": "^3.10.1",
 		"tsup": "^9.0.0",
 		"typescript": "^6.0.3",

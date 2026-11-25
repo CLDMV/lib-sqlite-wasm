@@ -16,7 +16,8 @@
 /**
  * @fileoverview Bundler config: produces the published dist/ output from src/.
  *
- * One self-contained ESM bundle for the root entry, written to dist/index.mjs. The CommonJS entry is not built:
+ * One self-contained ESM bundle per entry: dist/index.mjs, plus the browser-only dist/host.mjs and dist/worker.mjs. The
+ * CommonJS entry is not built:
  * `src/index.cjs` is a hand-written require(esm) wrapper around the built `index.mjs`, and `onSuccess` copies it verbatim
  * into dist/ beside the bundle, so it never duplicates the library.
  */
@@ -24,13 +25,23 @@ import { copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineConfig } from "tsup";
 
-/** Public entries, keyed by their path under dist/ (without extension). */
+/** Node entries, keyed by their path under dist/ (without extension). Each has a hand-written `src/<name>.cjs` wrapper. */
 const entries = {
 	index: "src/index.mts"
 };
 
+/**
+ * Browser entries, ESM only (no CJS wrapper): the worker host and the main-thread client. They share the Node build's
+ * settings; the one Node-only path they contain (loader.mts reading the wasm through a dynamic node:fs import) stays an
+ * external import that browser code never reaches, since the browser side loads the wasm with fetch.
+ */
+const browser = {
+	host: "src/worker/host.mts",
+	worker: "src/worker/client.mts"
+};
+
 export default defineConfig({
-	entry: entries,
+	entry: { ...entries, ...browser },
 	format: ["esm"],
 	outDir: "dist",
 	target: "node20",
