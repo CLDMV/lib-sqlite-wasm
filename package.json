@@ -1,6 +1,6 @@
 {
 	"name": "@cldmv/sqlite-wasm",
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"description": "SQLite compiled to WebAssembly for Node.js and browsers, with file storage on disk and in OPFS",
 	"type": "module",
 	"license": "Apache-2.0",
