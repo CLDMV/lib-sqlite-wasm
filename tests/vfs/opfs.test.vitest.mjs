@@ -117,6 +117,8 @@ describe("prepare / release", () => {
 		const root = new fakedirectory();
 		const first = create({ root, locks: null });
 		const second = create({ root, locks: null });
+		expect(first.held()).toBe("none");
+		expect(create({ root, locks: fakelocks() }).held()).toBe("web");
 		await first.prepare("app.db");
 		const error = await second.prepare("app.db").catch((thrown) => thrown);
 		expect(error.code).toBe("SQLITE_BUSY");

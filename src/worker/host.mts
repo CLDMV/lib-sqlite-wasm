@@ -38,7 +38,9 @@ import { load, type source } from "../core/browser-loader.mts";
 import { error } from "../api/error.mts";
 import type { database } from "../api/database.mts";
 import { use } from "../api/runtime.mts";
+import * as opfs from "../vfs/opfs.mts";
 import type { options as opfsoptions } from "../vfs/opfs.mts";
+import { install } from "../vfs/registry.mts";
 import { open, type engine } from "./engine.mts";
 import { serialize, type call, type endpoint, type failure, type outcome, type request, type settings } from "./protocol.mts";
 
@@ -315,6 +317,9 @@ export function serve(scope: endpoint, dependencies: dependencies): () => void {
  */
 export function listen(scope: endpoint = globalThis as unknown as endpoint, options: options = {}): () => void {
 	const { wasm, setup, ...driver } = options;
+	// The host always needs the OPFS driver, so it is bundled with it and registered here rather than imported on first
+	// open (a lazy import() inside a worker also trips up test runners that rewrite dynamic imports).
+	install("opfs", () => Promise.resolve(opfs));
 	// The first open in this worker creates the shared module instance, from this wasm when one is given (otherwise
 	// the package's own file: fetched in a browser, read from disk in Node).
 	if (wasm !== undefined) use(() => load(wasm));

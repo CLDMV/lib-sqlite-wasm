@@ -205,6 +205,16 @@ describe("lock option: one process", () => {
 		create().release("/never/prepared.db");
 	});
 
+	it("prepares with the driver's own timeout and the beside lock when given no options", async () => {
+		const path = join(scratch(), "direct.db");
+		const driver = create({ timeout: 10 });
+		const name = await driver.prepare(path);
+		expect(driver.held(name)).toBe("beside");
+		expect(existsSync(`${path}.lock`)).toBe(true);
+		driver.release(name);
+		expect(existsSync(`${path}.lock`)).toBe(false);
+	});
+
 	it.skipIf(process.getuid?.() === 0)("falls back from beside to temp for a read-only database in a read-only folder", async () => {
 		const dir = scratch();
 		const path = join(dir, "ro.db");
