@@ -6,6 +6,7 @@ coverage/
 # Generated declaration output (npm run types:build)
 types/
 tmp/
+.cache/
 trash/
 reference/
 package-lock.json
