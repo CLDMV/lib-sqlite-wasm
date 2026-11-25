@@ -11,8 +11,16 @@ The module is built from SQLite's own source archive with wasi-sdk, with no Emsc
 - Optional [Drizzle ORM](https://orm.drizzle.team) driver, sync and async
 - Several browser tabs can share one database
 
+## ✨ What's New
+
+### Latest: v0.1.0 (November 2026)
+
+- **First release** — SQLite 3.54.1 compiled to WebAssembly from SQLite's own source archive, with one synchronous API for Node.js (real files, owner lock between processes) and browser workers (OPFS, Web Locks), plus an async client for the browser main thread. WAL by default, standard on-disk files, an optional Drizzle ORM driver, and several browser tabs sharing one database with automatic handover.
+- [View full v0.1.0 Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.1.0.md)
+
 ## Contents
 
+- [What's New](#-whats-new)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [API](#api)
