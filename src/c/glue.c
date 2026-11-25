@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T01:18:15-08:00 (1795598295)
+ *	@Last modified time: 2026-11-25T02:39:09-08:00 (1795603149)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -30,7 +30,7 @@
  *   1. Host imports (env.vfs_*)
  *   2. sqlite3_file subclass and io methods (version 1: no xShm*, no xFetch; WAL runs with locking_mode=EXCLUSIVE)
  *   3. sqlite3_vfs methods and registration (sqlite3_os_init / sqlite3_os_end)
- *   4. Trampolines for JS callbacks (user functions, collations, hooks, busy handler): reserved for the core API phase
+ *   4. Trampolines for JS callbacks (user functions, aggregates, window functions, collations)
  *   5. Exported helpers for things the host cannot reach directly (macros, struct fields)
  */
 #include <stddef.h>
@@ -256,20 +256,81 @@ int sqlite3_os_end(void) {
 /* 4. Trampolines for JS callbacks                                                                                    */
 /* ------------------------------------------------------------------------------------------------------------------ */
 /*
- * Reserved for the core API phase. Each callback kind gets one fixed C function that SQLite calls with a context
- * pointer; the function forwards to a single imported JS dispatcher with a numeric callback id, so JS never has to
- * add entries to the wasm function table. Planned imports, alongside the vfs_* ones:
+ * Each callback kind has one fixed C function that SQLite calls; it forwards to an imported JS dispatcher with a
+ * numeric callback id, so JS never has to add entries to the wasm function table. The id travels as the user-data
+ * pointer (pApp / pArg) cast through intptr_t. JS keeps id -> callback and drops the entry when cb_destroy runs.
  *
- *   env.cb_func(id, ctx, argc, argv)          scalar function and aggregate step (sqlite3_create_function_v2)
- *   env.cb_final(id, ctx)                     aggregate final / window value
- *   env.cb_inverse(id, ctx, argc, argv)       window inverse
- *   env.cb_destroy(id)                        xDestroy for any of the above
- *   env.cb_collate(id, n1, p1, n2, p2)        collations (sqlite3_create_collation_v2)
- *   env.cb_busy(id, count)                    busy handler
- *   env.cb_update(id, op, db, table, rowid)   update hook; commit/rollback hooks follow the same pattern
+ *   env.cb_func(id, ctx, argc, argv)       scalar function call, aggregate and window step
+ *   env.cb_final(id, ctx, final)           aggregate final (final = 1) or window value (final = 0)
+ *   env.cb_inverse(id, ctx, argc, argv)    window inverse
+ *   env.cb_destroy(id)                     the function or collation was replaced, deleted or its connection closed
+ *   env.cb_collate(id, n1, p1, n2, p2)     collation compare; returns <0, 0 or >0
  *
- * The callback id travels as the pApp/user-data pointer value (cast through intptr_t).
+ * A JS exception never unwinds through these frames: the JS side catches it, reports it with sqlite3_result_error (or
+ * returns 0 from a collation) and rethrows it once the statement step returns.
  */
+
+CLDMV_IMPORT(cb_func) void cb_func(int id, sqlite3_context *ctx, int argc, sqlite3_value **argv);
+CLDMV_IMPORT(cb_final) void cb_final(int id, sqlite3_context *ctx, int final);
+CLDMV_IMPORT(cb_inverse) void cb_inverse(int id, sqlite3_context *ctx, int argc, sqlite3_value **argv);
+CLDMV_IMPORT(cb_destroy) void cb_destroy(int id);
+CLDMV_IMPORT(cb_collate) int cb_collate(int id, int n1, const void *p1, int n2, const void *p2);
+
+#define CALLBACK_ID(pointer) ((int)(intptr_t)(pointer))
+
+static void tramp_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	cb_func(CALLBACK_ID(sqlite3_user_data(ctx)), ctx, argc, argv);
+}
+
+static void tramp_final(sqlite3_context *ctx) {
+	cb_final(CALLBACK_ID(sqlite3_user_data(ctx)), ctx, 1);
+}
+
+static void tramp_value(sqlite3_context *ctx) {
+	cb_final(CALLBACK_ID(sqlite3_user_data(ctx)), ctx, 0);
+}
+
+static void tramp_inverse(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	cb_inverse(CALLBACK_ID(sqlite3_user_data(ctx)), ctx, argc, argv);
+}
+
+static void tramp_destroy(void *user) {
+	cb_destroy(CALLBACK_ID(user));
+}
+
+static int tramp_collate(void *user, int n1, const void *p1, int n2, const void *p2) {
+	return cb_collate(CALLBACK_ID(user), n1, p1, n2, p2);
+}
+
+/* Function kinds for cldmv_create_function. */
+#define CLDMV_SCALAR 0
+#define CLDMV_AGGREGATE 1
+#define CLDMV_WINDOW 2
+
+/* Registers a user function backed by JS callback `id`. sqlite3_create_function_v2 and
+ * sqlite3_create_window_function call xDestroy themselves when they fail, so JS always gets its cb_destroy. */
+CLDMV_EXPORT(cldmv_create_function)
+int cldmv_create_function(sqlite3 *db, const char *name, int argc, int flags, int id, int kind) {
+	void *user = (void *)(intptr_t)id;
+	switch (kind) {
+	case CLDMV_SCALAR:
+		return sqlite3_create_function_v2(db, name, argc, flags, user, tramp_func, 0, 0, tramp_destroy);
+	case CLDMV_AGGREGATE:
+		return sqlite3_create_function_v2(db, name, argc, flags, user, 0, tramp_func, tramp_final, tramp_destroy);
+	default:
+		return sqlite3_create_window_function(db, name, argc, flags, user, tramp_func, tramp_final, tramp_value,
+		                                      tramp_inverse, tramp_destroy);
+	}
+}
+
+/* Registers a UTF-8 collation backed by JS callback `id`. Unlike the function APIs, sqlite3_create_collation_v2 does not
+ * call xDestroy when it fails, so this does it to keep the JS side's bookkeeping in one place. */
+CLDMV_EXPORT(cldmv_create_collation) int cldmv_create_collation(sqlite3 *db, const char *name, int id) {
+	void *user = (void *)(intptr_t)id;
+	int rc = sqlite3_create_collation_v2(db, name, SQLITE_UTF8, user, tramp_collate, tramp_destroy);
+	if (rc != SQLITE_OK) tramp_destroy(user);
+	return rc;
+}
 
 /* ------------------------------------------------------------------------------------------------------------------ */
 /* 5. Exported helpers                                                                                                */
