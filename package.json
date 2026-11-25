@@ -112,7 +112,7 @@
 		"types:build": "tsc -p .configs/tsconfig.json --noCheck",
 		"types:check": "tsc -p .configs/tsconfig.json --noEmit",
 		"pretest": "npm run build",
-		"test": "node tests/run-vitest.mjs && npm run test:cjs && npm run test:dist && npm run test:browser",
+		"test": "node tests/run-vitest.mjs && npm run test:cjs && npm run test:dist",
 		"test:cjs": "npm run build && node --test tests/cjs/entry.test.cjs tests/cjs/drizzle.test.cjs",
 		"test:dist": "npm run build && node tests/run-vitest.mjs --mode=dist",
 		"test:browser": "playwright install chromium-headless-shell && vitest run --config .configs/vitest.browser.config.mjs",

@@ -515,7 +515,7 @@ node --conditions=sqlite-wasm-dev app.mts
 
 (The wasm itself still has to be built once.)
 
-Useful scripts: `npm run build`, `npm test` (Node tests, the CommonJS tests, the same tests against `dist/`, and Chromium browser tests), `npm run coverage`, `npm run lint`, `npm run format`, `npm run types:check`.
+Useful scripts: `npm run build`, `npm test` (Node tests, the CommonJS tests and the same tests against `dist/`), `npm run test:browser` (Chromium), `npm run coverage`, `npm run lint`, `npm run format`, `npm run types:check`.
 
 ## License
 
