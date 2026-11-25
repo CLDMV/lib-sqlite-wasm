@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T00:48:00-08:00 (1795596480)
+ *	@Last modified time: 2026-11-25T00:57:10-08:00 (1795597030)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -19,6 +19,7 @@ import json from "@eslint/json";
 import jsonvPlugin from "@cldmv/eslint-plugin-jsonv";
 import markdown from "@eslint/markdown";
 import css from "@eslint/css";
+import tseslint from "typescript-eslint";
 import { defineConfig } from "eslint/config";
 
 export default defineConfig([
@@ -60,6 +61,24 @@ export default defineConfig([
 			"no-unused-vars": [
 				"error",
 				{
+					argsIgnorePattern: "^(_|___.*)$",
+					caughtErrorsIgnorePattern: "^(_|___.*)$",
+					destructuredArrayIgnorePattern: "^(_|___.*)$",
+					varsIgnorePattern: "^(_|___.*)$"
+				}
+			]
+		}
+	},
+	{
+		// TypeScript sources (src/**/*.mts).
+		files: ["**/*.{ts,mts,cts}"],
+		extends: [js.configs.recommended, tseslint.configs.recommended],
+		languageOptions: { ecmaVersion: 2023, sourceType: "module", globals: { ...globals.node, ...globals.browser } },
+		rules: {
+			"@typescript-eslint/no-unused-vars": [
+				"error",
+				{
+					ignoreRestSiblings: true,
 					argsIgnorePattern: "^(_|___.*)$",
 					caughtErrorsIgnorePattern: "^(_|___.*)$",
 					destructuredArrayIgnorePattern: "^(_|___.*)$",

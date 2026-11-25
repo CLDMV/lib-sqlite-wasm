@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T00:48:03-08:00 (1795596483)
+ *	@Last modified time: 2026-11-25T00:57:11-08:00 (1795597031)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -17,7 +17,7 @@
  * @fileoverview Bundler config: produces the published dist/ output from src/.
  *
  * One self-contained ESM bundle for the root entry, written to dist/index.mjs. The CommonJS entry is not built:
- * `src/index.cjs` is a thin require(esm) wrapper around its sibling `index.mjs`, and `onSuccess` copies it verbatim
+ * `src/index.cjs` is a hand-written require(esm) wrapper around the built `index.mjs`, and `onSuccess` copies it verbatim
  * into dist/ beside the bundle, so it never duplicates the library.
  */
 import { copyFileSync } from "node:fs";
@@ -26,7 +26,7 @@ import { defineConfig } from "tsup";
 
 /** Public entries, keyed by their path under dist/ (without extension). */
 const entries = {
-	index: "src/index.mjs"
+	index: "src/index.mts"
 };
 
 export default defineConfig({
