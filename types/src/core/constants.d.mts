@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T01:18:15-08:00 (1795598295)
+ *	@Last modified time: 2026-11-25T02:39:09-08:00 (1795603149)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -19,8 +19,10 @@
 export declare const SQLITE_OK = 0;
 export declare const SQLITE_ERROR = 1;
 export declare const SQLITE_BUSY = 5;
+export declare const SQLITE_NOMEM = 7;
 export declare const SQLITE_NOTFOUND = 12;
 export declare const SQLITE_CANTOPEN = 14;
+export declare const SQLITE_MISUSE = 21;
 export declare const SQLITE_ROW = 100;
 export declare const SQLITE_DONE = 101;
 export declare const SQLITE_IOERR = 10;
