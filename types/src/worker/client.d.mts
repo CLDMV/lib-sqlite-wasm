@@ -13,8 +13,12 @@
  *
  */
 import { error, type endpoint, type settings, type value } from "./protocol.mts";
-/** Options for `connect()`. */
-export type options = settings;
+import { type watcher } from "./share.mts";
+/** Options for `connect()`: the worker's open settings, and `share` to use one database from several tabs. */
+export type options = settings & {
+    /** Share the database with the origin's other tabs that connect with `share: true` (needs the worker's URL). */
+    share?: boolean;
+};
 /** What `connect()` talks to: a worker script's URL (a module worker is started), or a Worker / MessagePort already running the host. */
 export type target = string | URL | endpoint;
 /** A row as an object keyed by column name. */
@@ -107,13 +111,25 @@ export interface database extends transaction {
         readonly transaction: boolean;
     };
 }
+/** A connection made with `share: true`: `info` also says whether this tab leads, and reports changes. */
+export interface shared extends database {
+    info: database["info"] & {
+        /** Whether this tab's worker holds the database (the leader) or this tab goes through another tab (a follower). */
+        readonly leader: boolean;
+        /** Calls `listener` with the new value whenever `leader` changes; returns the function that stops it. */
+        watch(listener: watcher): () => void;
+    };
+}
 /**
  * Opens `path` in a worker running the host (`host.listen()`).
  * @param target   the worker script's URL (started as a module worker, and terminated on close), or a Worker /
  *                 MessagePort already connected to a host
  * @param path     the database path in OPFS (or a name, with `storage: "memory"`)
- * @param options  storage, journal mode, readonly, create
+ * @param options  storage, journal mode, readonly, create, and `share` to share the database between tabs
  */
+export declare function connect(target: target, path: string, options: options & {
+    share: true;
+}): Promise<shared>;
 export declare function connect(target: target, path: string, options?: options): Promise<database>;
 /** The client as a namespace: `client.connect(...)`; `client.error` (alias `err`) is the class calls reject with. */
 declare const client: {

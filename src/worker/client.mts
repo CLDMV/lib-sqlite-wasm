@@ -30,6 +30,10 @@
  *
  * User-defined functions and collations run in the worker, so `db.fn.*` isn't available here; register them in the
  * host's `setup(db)` hook (see host.mts).
+ *
+ * With `{ share: true }`, several tabs of an origin use one database: one tab's worker opens it and the other tabs go
+ * through that tab, with ownership moving on when it closes (see share.mts). `db.info.leader` says whether this tab
+ * leads, and `db.info.watch(listener)` reports when that changes.
  */
 import { SQLITE_MISUSE } from "../core/constants.mts";
 import {
@@ -43,9 +47,13 @@ import {
 	type settings,
 	type value
 } from "./protocol.mts";
+import { ambient, coordinator, type watcher } from "./share.mts";
 
-/** Options for `connect()`. */
-export type options = settings;
+/** Options for `connect()`: the worker's open settings, and `share` to use one database from several tabs. */
+export type options = settings & {
+	/** Share the database with the origin's other tabs that connect with `share: true` (needs the worker's URL). */
+	share?: boolean;
+};
 
 /** What `connect()` talks to: a worker script's URL (a module worker is started), or a Worker / MessagePort already running the host. */
 export type target = string | URL | endpoint;
@@ -136,6 +144,16 @@ export interface database extends transaction {
 	close(): Promise<void>;
 	proxy: proxy;
 	info: { readonly path: string; readonly storage: string; readonly lock: string; readonly open: boolean; readonly transaction: boolean };
+}
+
+/** A connection made with `share: true`: `info` also says whether this tab leads, and reports changes. */
+export interface shared extends database {
+	info: database["info"] & {
+		/** Whether this tab's worker holds the database (the leader) or this tab goes through another tab (a follower). */
+		readonly leader: boolean;
+		/** Calls `listener` with the new value whenever `leader` changes; returns the function that stops it. */
+		watch(listener: watcher): () => void;
+	};
 }
 
 /** A call waiting to be sent, with its promise's settlers. */
@@ -497,14 +515,21 @@ function wrap(channel: link, opened: { path: string; storage: string; lock: stri
  * @param target   the worker script's URL (started as a module worker, and terminated on close), or a Worker /
  *                 MessagePort already connected to a host
  * @param path     the database path in OPFS (or a name, with `storage: "memory"`)
- * @param options  storage, journal mode, readonly, create
+ * @param options  storage, journal mode, readonly, create, and `share` to share the database between tabs
  */
+export function connect(target: target, path: string, options: options & { share: true }): Promise<shared>;
+export function connect(target: target, path: string, options?: options): Promise<database>;
 export async function connect(target: target, path: string, options: options = {}): Promise<database> {
-	const started = typeof target === "string" || target instanceof URL ? new Worker(target, { type: "module" }) : undefined;
-	const channel = new link((started ?? target) as endpoint, started);
+	const { share, ...settings } = options;
+	const sharing = share ? new coordinator(target, ambient(target as string)) : undefined;
+	const started = !sharing && (typeof target === "string" || target instanceof URL) ? new Worker(target, { type: "module" }) : undefined;
+	const channel = new link((sharing ?? started ?? target) as endpoint, started);
 	try {
-		const opened = (await channel.call({ op: "open", path, options })) as { path: string; storage: string; lock: string };
-		return wrap(channel, opened);
+		const opened = (await channel.call({ op: "open", path, options: settings })) as { path: string; storage: string; lock: string };
+		const db = wrap(channel, opened);
+		if (sharing)
+			Object.defineProperties(db.info, { leader: { get: () => sharing.leader, enumerable: true }, watch: { value: sharing.watch } });
+		return db;
 	} catch (thrown) {
 		channel.end(thrown);
 		throw thrown;

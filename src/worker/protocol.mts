@@ -137,3 +137,27 @@ export function revive(data: failure): Error {
 	plain.name = data.name;
 	return plain;
 }
+
+/** What opening a database reports back: the resolved path, the storage and the lock in effect. */
+export interface opened {
+	path: string;
+	storage: string;
+	lock: string;
+}
+
+/**
+ * Messages between tabs that share one database (`connect(..., { share: true })`), sent over a BroadcastChannel named
+ * `sqlite:<path>`. Every tab sees every message, so each one names the tab it is for or from.
+ *
+ * - `hello`: a tab joined and wants to know the leader.
+ * - `leader`: the leader's announcement, sent when it has opened the database and in answer to `hello`.
+ * - `request`: a follower's request for the leader named in `to`; a leader ignores requests addressed to another tab.
+ * - `started`: the leader is about to run a follower's write, so a retry after a handover could run it twice.
+ * - `response`: the leader's answer to a follower's request.
+ */
+export type notice =
+	| { type: "hello"; tab: string }
+	| { type: "leader"; tab: string; info: opened }
+	| { type: "request"; to: string; tab: string; write: boolean; request: request }
+	| { type: "started"; leader: string; tab: string; id: number }
+	| { type: "response"; tab: string; response: response };
