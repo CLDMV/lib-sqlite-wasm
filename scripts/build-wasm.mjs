@@ -37,6 +37,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync, inflateRawSync } from "node:zlib";
+import { fetchWithRetry } from "./lib/fetch.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const versions = JSON.parse(readFileSync(path.join(root, "sqlite.version.json"), "utf8"));
@@ -193,7 +194,12 @@ function log(message) {
 function hostKey() {
 	const os = { linux: "linux", darwin: "darwin" }[process.platform];
 	const arch = { x64: "x64", arm64: "arm64" }[process.arch];
-	if (!os || !arch) throw new Error(`build-wasm: no pinned toolchain for ${process.platform}-${process.arch}`);
+	if (!os || !arch) {
+		throw new Error(
+			`build-wasm: no pinned toolchain for ${process.platform}-${process.arch} (supported: linux and darwin, x64 and arm64). ` +
+				"The published package ships a prebuilt dist/sqlite3.wasm, so only contributors building from source need this; use WSL or a Linux container on Windows."
+		);
+	}
 	return `${os}-${arch}`;
 }
 
@@ -214,10 +220,7 @@ function digest(algorithm, data) {
  */
 async function download(url, file, algorithm, expected) {
 	if (existsSync(file) && digest(algorithm, readFileSync(file)) === expected) return;
-	log(`downloading ${url}`);
-	const response = await fetch(url);
-	if (!response.ok) throw new Error(`build-wasm: ${url}: HTTP ${response.status}`);
-	const data = Buffer.from(await response.arrayBuffer());
+	const data = await fetchWithRetry(url, { log });
 	const actual = digest(algorithm, data);
 	if (actual !== expected) throw new Error(`build-wasm: ${url}: ${algorithm} mismatch (expected ${expected}, got ${actual})`);
 	mkdirSync(path.dirname(file), { recursive: true });
