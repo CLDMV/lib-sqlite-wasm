@@ -154,6 +154,21 @@ export function defineSuite({ name, sync, open, migrate, extra }) {
 			expect(await db.select({ n: count() }).from(posts).get()).toEqual({ n: 2 });
 		});
 
+		it("limits update and delete with orderBy and limit", async () => {
+			await seed();
+			const reset = await db
+				.update(posts)
+				.set({ views: 0 })
+				.orderBy(desc(posts.views))
+				.limit(1)
+				.returning({ title: posts.title, views: posts.views })
+				.all();
+			expect(reset).toEqual([{ title: "first", views: 0 }]);
+			const removed = await db.delete(posts).orderBy(asc(posts.views)).limit(2).returning({ title: posts.title }).all();
+			expect(removed.map((row) => row.title).sort()).toEqual(["first", "second"]);
+			expect(await db.select({ title: posts.title }).from(posts).all()).toEqual([{ title: "third" }]);
+		});
+
 		it("aggregates", async () => {
 			await seed();
 			expect(

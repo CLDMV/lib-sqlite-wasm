@@ -16,7 +16,7 @@
 /**
  * @fileoverview Updates sqlite.version.json to the newest pins.
  *
- *   npm run sqlite:bump                 SQLite amalgamation, from the table sqlite.org embeds in its download page
+ *   npm run sqlite:bump                 SQLite source archive, from the table sqlite.org embeds in its download page
  *   npm run sqlite:bump -- --toolchain  wasi-sdk and binaryen, from their latest GitHub release (asset digests)
  *   npm run sqlite:bump -- --all        both
  *   npm run sqlite:bump -- --check      report what would change and exit 1 if anything is out of date; write nothing
@@ -50,21 +50,21 @@ const BINARYEN_PLATFORM = {
 };
 
 /**
- * Reads the amalgamation row from the CSV that sqlite.org embeds in an HTML comment on its download page
+ * Reads the source archive row (sqlite-src-<n>.zip, what build-wasm generates the amalgamation from) from the CSV that sqlite.org embeds in an HTML comment on its download page
  * (PRODUCT,VERSION,RELATIVE-URL,SIZE-IN-BYTES,SHA3-HASH).
  * @param {string} html
- * @returns {{ version: string, amalgamation: { url: string, size: number, sha3_256: string, dir: string } }}
+ * @returns {{ version: string, source: { url: string, size: number, sha3_256: string, dir: string } }}
  */
 export function parseDownloadPage(html) {
 	for (const line of html.split(/\r?\n/)) {
 		const [product, version, relative, size, sha3, ...rest] = line.split(",");
-		if (product !== "PRODUCT" || rest.length || !/^sqlite-amalgamation-\d+\.zip$/.test(path.posix.basename(relative ?? ""))) continue;
+		if (product !== "PRODUCT" || rest.length || !/^sqlite-src-\d+\.zip$/.test(path.posix.basename(relative ?? ""))) continue;
 		if (!/^\d+\.\d+\.\d+$/.test(version) || !/^[0-9a-f]{64}$/.test(sha3) || !/^\d+$/.test(size)) {
-			throw new Error(`bump-sqlite: unexpected amalgamation row: ${line}`);
+			throw new Error(`bump-sqlite: unexpected source row: ${line}`);
 		}
 		return {
 			version,
-			amalgamation: {
+			source: {
 				url: new URL(relative, DOWNLOAD_BASE).href,
 				size: Number(size),
 				sha3_256: sha3,
@@ -72,7 +72,7 @@ export function parseDownloadPage(html) {
 			}
 		};
 	}
-	throw new Error("bump-sqlite: no sqlite-amalgamation row in the download page");
+	throw new Error("bump-sqlite: no sqlite-src row in the download page");
 }
 
 /**
@@ -145,9 +145,9 @@ export function applyBump(current, next) {
 	const versions = structuredClone(current);
 	/** @type {string[]} */
 	const changes = [];
-	if (next.sqlite && JSON.stringify(versions.sqlite.amalgamation) !== JSON.stringify(next.sqlite.amalgamation)) {
+	if (next.sqlite && JSON.stringify(versions.sqlite.source) !== JSON.stringify(next.sqlite.source)) {
 		changes.push(`sqlite ${versions.sqlite.version} -> ${next.sqlite.version}`);
-		versions.sqlite = { version: next.sqlite.version, amalgamation: next.sqlite.amalgamation };
+		versions.sqlite = { version: next.sqlite.version, source: next.sqlite.source };
 	}
 	for (const key of /** @type {const} */ (["wasiSdk", "binaryen"])) {
 		if (next[key] && JSON.stringify(versions[key]) !== JSON.stringify(next[key])) {

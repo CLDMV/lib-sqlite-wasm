@@ -50,17 +50,17 @@ const binaryenRelease = release("version_134", [
 ]);
 
 describe("parseDownloadPage", () => {
-	it("reads the amalgamation row from the embedded CSV", () => {
-		expect(parseDownloadPage(page)).toEqual({ version: current.sqlite.version, amalgamation: current.sqlite.amalgamation });
+	it("reads the source archive row from the embedded CSV", () => {
+		expect(parseDownloadPage(page)).toEqual({ version: current.sqlite.version, source: current.sqlite.source });
 	});
 
-	it("rejects a page with no amalgamation row", () => {
-		expect(() => parseDownloadPage("<html>nothing</html>")).toThrow(/no sqlite-amalgamation row/);
+	it("rejects a page with no source archive row", () => {
+		expect(() => parseDownloadPage("<html>nothing</html>")).toThrow(/no sqlite-src row/);
 	});
 
 	it("rejects a malformed row", () => {
-		const bad = "PRODUCT,3.54.1,2026/sqlite-amalgamation-3540100.zip,2990966,nothex";
-		expect(() => parseDownloadPage(bad)).toThrow(/unexpected amalgamation row/);
+		const bad = "PRODUCT,3.54.1,2026/sqlite-src-3540100.zip,14899528,nothex";
+		expect(() => parseDownloadPage(bad)).toThrow(/unexpected source row/);
 	});
 });
 
@@ -122,14 +122,14 @@ describe("applyBump", () => {
 	});
 
 	it("replaces the sqlite pin and leaves the toolchain alone", () => {
-		const row = "PRODUCT,3.55.0,2027/sqlite-amalgamation-3550000.zip,3000000," + sha("1");
+		const row = "PRODUCT,3.55.0,2027/sqlite-src-3550000.zip,3000000," + sha("1");
 		const { versions, changes } = applyBump(current, { sqlite: parseDownloadPage(row) });
 		expect(changes).toEqual([`sqlite ${current.sqlite.version} -> 3.55.0`]);
-		expect(versions.sqlite.amalgamation).toEqual({
-			url: "https://www.sqlite.org/2027/sqlite-amalgamation-3550000.zip",
+		expect(versions.sqlite.source).toEqual({
+			url: "https://www.sqlite.org/2027/sqlite-src-3550000.zip",
 			size: 3000000,
 			sha3_256: sha("1"),
-			dir: "sqlite-amalgamation-3550000"
+			dir: "sqlite-src-3550000"
 		});
 		expect(versions.wasiSdk).toEqual(current.wasiSdk);
 		expect(current.sqlite.version).toBe("3.54.1");
@@ -209,7 +209,7 @@ describe("fetchWithRetry", () => {
 });
 
 describe("main", () => {
-	const newPage = "PRODUCT,3.55.0,2027/sqlite-amalgamation-3550000.zip,3000000," + sha("1");
+	const newPage = "PRODUCT,3.55.0,2027/sqlite-src-3550000.zip,3000000," + sha("1");
 	const scratch = path.join(root, "tmp", "agents", "ci", "bump-test");
 
 	/** A scratch copy of the version file plus a fake network keyed by URL. */

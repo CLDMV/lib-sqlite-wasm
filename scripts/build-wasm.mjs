@@ -17,10 +17,22 @@
  * @fileoverview Builds dist/sqlite3.wasm from source.
  *
  * Steps, all driven from sqlite.version.json:
- *   1. Download the SQLite amalgamation (verified against its SHA3-256) and extract sqlite3.c / sqlite3.h.
+ *   1. Download SQLite's canonical source archive (sqlite-src-<n>.zip, verified against its SHA3-256), extract it, and
+ *      generate sqlite3.c / sqlite3.h from it with the host toolchain (see "Why the source archive" below).
  *   2. Download wasi-sdk (clang + wasi-libc) and binaryen (wasm-opt) for this host, verified against their SHA-256.
  *   3. Compile sqlite3.c + src/c/glue.c with clang for wasm32-wasip1 (-O3 -flto, reactor module, no emscripten).
  *   4. Run wasm-opt and write dist/sqlite3.wasm.
+ *
+ * Why the source archive: SQLITE_ENABLE_UPDATE_DELETE_LIMIT (UPDATE/DELETE ... ORDER BY ... LIMIT) changes the grammar,
+ * so the parser has to be generated with it. The published amalgamation ships a parser generated without it, and
+ * defining the macro while compiling that amalgamation only adds the name to PRAGMA compile_options; the syntax stays
+ * an error. The only way to get it is to run SQLite's own generators with the flag. The archive's Makefile.linux-generic
+ * does exactly that with `make sqlite3.c OPT_FEATURE_FLAGS=-DSQLITE_ENABLE_UPDATE_DELETE_LIMIT`: it builds lemon,
+ * mkkeywordhash and a bundled Jim Tcl interpreter (autosetup/jimsh0.c) with the host C compiler, regenerates parse.c, and
+ * runs tool/mksqlite3c.tcl. That is the same pipeline sqlite.org uses for the released amalgamation, so nothing is
+ * patched or substituted by hand, and no tclsh is needed. The host needs `make` (GNU or BSD-compatible with GNU
+ * extensions: Linux and macOS ship one) and a C compiler named by $CC (default `cc`), plus the `sh`, `sed` and `awk` those
+ * makefiles use. Only the parser-affecting flag is passed to generation; every other option is applied when compiling.
  *
  * Downloads and tool trees live in SQLITE_WASM_TOOLCHAIN_DIR (default .cache/toolchains/). The linked module is also
  * cached under .cache/build/, keyed by everything that goes into it, so a second `npm run build` in the same checkout
@@ -61,8 +73,7 @@ export const SQLITE_DEFINES = [
 	"SQLITE_ENABLE_MATH_FUNCTIONS",
 	"SQLITE_ENABLE_COLUMN_METADATA",
 	"SQLITE_ENABLE_STAT4",
-	// Not SQLITE_ENABLE_UPDATE_DELETE_LIMIT: it needs a parser regenerated with Lemon, and the amalgamation ships a
-	// parser built without it (setting the define only adds the name to compile_options; the syntax stays an error).
+	"SQLITE_ENABLE_UPDATE_DELETE_LIMIT",
 	"SQLITE_ENABLE_PERCENTILE",
 	// Defaults
 	"SQLITE_DEFAULT_FOREIGN_KEYS=1",
@@ -166,6 +177,12 @@ export const EXPORTS = [
 	"sqlite3_result_error"
 ];
 
+/**
+ * Flags for the generation step (lemon, mkkeywordhash). They go into the build cache key. SQLITE_ENABLE_UPDATE_DELETE_LIMIT
+ * is also in SQLITE_DEFINES, because the compiled code (not only the parser) tests it.
+ */
+const GENERATOR_FLAGS = ["-DSQLITE_ENABLE_UPDATE_DELETE_LIMIT"];
+
 /** clang flags shared by compile and link. */
 const CFLAGS = ["--target=wasm32-wasip1", "-O3", "-flto", "-DNDEBUG", "-Wno-unused-command-line-argument"];
 
@@ -229,13 +246,13 @@ async function download(url, file, algorithm, expected) {
 }
 
 /**
- * Extracts named entries from a zip archive (stored or deflated entries only, which is all sqlite.org ships).
+ * Extracts the entries of a zip archive that `accept` approves (stored or deflated entries only, which is all sqlite.org
+ * ships). Directory entries are skipped.
  * @param {Buffer} zip
- * @param {string[]} names  entry paths inside the archive
+ * @param {(name: string) => boolean} accept  entry path inside the archive
  * @returns {Map<string, Buffer>}
  */
-function unzip(zip, names) {
-	const wanted = new Set(names);
+function unzip(zip, accept) {
 	const found = new Map();
 	// End of central directory record: signature 0x06054b50, searched backwards past a possible comment.
 	let eocd = zip.length - 22;
@@ -253,14 +270,13 @@ function unzip(zip, names) {
 		const localHeader = zip.readUInt32LE(at + 42);
 		const name = zip.toString("utf8", at + 46, at + 46 + nameLength);
 		at += 46 + nameLength + extraLength + commentLength;
-		if (!wanted.has(name)) continue;
+		if (name.endsWith("/") || !accept(name)) continue;
 		const dataStart = localHeader + 30 + zip.readUInt16LE(localHeader + 26) + zip.readUInt16LE(localHeader + 28);
 		const raw = zip.subarray(dataStart, dataStart + compressedSize);
 		if (method === 0) found.set(name, Buffer.from(raw));
 		else if (method === 8) found.set(name, inflateRawSync(raw));
 		else throw new Error(`build-wasm: ${name}: unsupported zip method ${method}`);
 	}
-	for (const name of wanted) if (!found.has(name)) throw new Error(`build-wasm: ${name} missing from the amalgamation zip`);
 	return found;
 }
 
@@ -298,19 +314,40 @@ async function toolchain(name, pin) {
 	return path.join(home, asset.dir);
 }
 
-/** Downloads and extracts the amalgamation; returns the directory holding sqlite3.c and sqlite3.h. */
+/**
+ * Downloads and unpacks SQLite's source archive, then generates the amalgamation from it with the parser built for
+ * UPDATE/DELETE ... LIMIT. Returns the directory holding sqlite3.c and sqlite3.h.
+ */
 async function amalgamation() {
-	const { version, amalgamation: pin } = versions.sqlite;
-	const dir = path.join(toolchainDir, `sqlite-${version}`);
+	const { version, source: pin } = versions.sqlite;
+	const stamp = digest("sha256", Buffer.from(JSON.stringify({ sha3_256: pin.sha3_256, GENERATOR_FLAGS }))).slice(0, 16);
+	const dir = path.join(toolchainDir, `sqlite-${version}-amalgamation`);
 	const marker = path.join(dir, ".complete");
-	if (existsSync(marker) && readFileSync(marker, "utf8") === pin.sha3_256) return dir;
+	if (existsSync(marker) && readFileSync(marker, "utf8") === stamp) return dir;
+
 	const archive = path.join(toolchainDir, "downloads", path.basename(new URL(pin.url).pathname));
 	await download(pin.url, archive, "sha3-256", pin.sha3_256);
-	const files = unzip(readFileSync(archive), [`${pin.dir}/sqlite3.c`, `${pin.dir}/sqlite3.h`]);
+	const tree = path.join(toolchainDir, `sqlite-${version}-src`);
+	rmSync(tree, { recursive: true, force: true });
+	// The generators need src/, tool/, ext/, autosetup/jimsh0.c and the makefiles; the test suite is most of the archive.
+	const files = unzip(readFileSync(archive), (name) => name.startsWith(`${pin.dir}/`) && !name.startsWith(`${pin.dir}/test/`));
+	for (const [name, data] of files) {
+		const target = path.join(tree, name.slice(pin.dir.length + 1));
+		if (path.relative(tree, target).startsWith("..")) throw new Error(`build-wasm: ${name}: path escapes the archive`);
+		mkdirSync(path.dirname(target), { recursive: true });
+		writeFileSync(target, data);
+	}
+	const top = path.join(tree, "Makefile.linux-generic");
+	if (!existsSync(top)) throw new Error(`build-wasm: ${path.basename(archive)} has no ${pin.dir}/Makefile.linux-generic`);
+
 	rmSync(dir, { recursive: true, force: true });
 	mkdirSync(dir, { recursive: true });
-	for (const [name, data] of files) writeFileSync(path.join(dir, path.basename(name)), data);
-	writeFileSync(marker, pin.sha3_256);
+	log(`generating sqlite3.c with ${GENERATOR_FLAGS.join(" ")}`);
+	run("make", ["-s", "-f", top, `TOP=${tree}`, `OPT_FEATURE_FLAGS=${GENERATOR_FLAGS.join(" ")}`, "sqlite3.c", "sqlite3.h"], { cwd: dir });
+	for (const name of ["sqlite3.c", "sqlite3.h"]) {
+		if (!existsSync(path.join(dir, name))) throw new Error(`build-wasm: generation did not produce ${name}`);
+	}
+	writeFileSync(marker, stamp);
 	return dir;
 }
 
@@ -325,6 +362,7 @@ async function main() {
 				versions,
 				glue: digest("sha256", readFileSync(glue)),
 				SQLITE_DEFINES,
+				GENERATOR_FLAGS,
 				EXPORTS,
 				CFLAGS,
 				LDFLAGS,

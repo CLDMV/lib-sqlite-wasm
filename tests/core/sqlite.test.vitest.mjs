@@ -31,6 +31,7 @@ const ENABLED = [
 	"ENABLE_MATH_FUNCTIONS",
 	"ENABLE_COLUMN_METADATA",
 	"ENABLE_STAT4",
+	"ENABLE_UPDATE_DELETE_LIMIT",
 	"ENABLE_PERCENTILE",
 	"DEFAULT_FOREIGN_KEYS",
 	"DEFAULT_MEMSTATUS=0",
@@ -45,15 +46,7 @@ const ENABLED = [
 const OMITTED = ["LOAD_EXTENSION", "UTF16", "SHARED_CACHE", "DEPRECATED", "PROGRESS_CALLBACK", "TCL_VARIABLE", "GET_TABLE"];
 
 /** Options that must not be on (they would undo an omission or a default above). */
-const MUST_NOT_HAVE = [
-	"ENABLE_UPDATE_DELETE_LIMIT",
-	"ENABLE_LOAD_EXTENSION",
-	"ENABLE_SHARED_CACHE",
-	"ENABLE_FTS4",
-	"THREADSAFE=1",
-	"THREADSAFE=2",
-	"DQS=3"
-];
+const MUST_NOT_HAVE = ["ENABLE_LOAD_EXTENSION", "ENABLE_SHARED_CACHE", "ENABLE_FTS4", "THREADSAFE=1", "THREADSAFE=2", "DQS=3"];
 
 const open = [];
 async function db(name = "test.db", driver = new MemoryDriver()) {
@@ -149,10 +142,31 @@ describe("sqlite3.wasm", () => {
 		).toEqual([{ r: 4, j: 2, m: 5 }]);
 	});
 
-	it("has no DELETE/UPDATE ... LIMIT: the amalgamation's parser is generated without it", async () => {
+	it("limits UPDATE by ORDER BY and LIMIT", async () => {
 		const handle = await db();
-		handle.exec("create table t(x)");
-		expect(() => handle.exec("delete from t order by x limit 1")).toThrow(/near "order": syntax error/);
+		handle.exec("create table t(id integer primary key, v text); insert into t(id, v) values (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')");
+		const changed = () => handle.exec("select changes() as n")[0].n;
+		handle.exec("update t set v = 'x' order by id desc limit 2");
+		expect(changed()).toBe(2);
+		expect(handle.exec("select id, v from t order by id")).toEqual([
+			{ id: 1, v: "a" },
+			{ id: 2, v: "b" },
+			{ id: 3, v: "x" },
+			{ id: 4, v: "x" }
+		]);
+		handle.exec("update t set v = 'y' where id < 4 order by id limit 1 offset 1");
+		expect(changed()).toBe(1);
+		expect(handle.exec("select v from t where id = 2")).toEqual([{ v: "y" }]);
+	});
+
+	it("limits DELETE by ORDER BY and LIMIT", async () => {
+		const handle = await db();
+		handle.exec("create table t(id integer primary key, v text); insert into t(id, v) values (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')");
+		handle.exec("delete from t order by id desc limit 2");
+		expect(handle.exec("select changes() as n")).toEqual([{ n: 2 }]);
+		expect(handle.exec("select id from t order by id")).toEqual([{ id: 1 }, { id: 2 }]);
+		handle.exec("delete from t where id > 0 limit 5");
+		expect(handle.exec("select count(*) as n from t")).toEqual([{ n: 0 }]);
 	});
 
 	it("enforces foreign keys by default", async () => {
