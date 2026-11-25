@@ -1,0 +1,10 @@
+{
+	"name": "@cldmv/sqlite-wasm",
+	"version": "0.0.0",
+	"description": "SQLite compiled to WebAssembly for Node.js and browsers, with file storage on disk and in OPFS",
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/CLDMV/lib-sqlite-wasm.git"
+	}
+}
