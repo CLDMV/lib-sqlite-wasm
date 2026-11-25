@@ -1,7 +1,5 @@
 {
 	"compilerOptions": {
-		"allowJs": true,
-		"checkJs": true,
 		"declaration": true,
 		"emitDeclarationOnly": true,
 		"outDir": "../types",
@@ -9,13 +7,19 @@
 		"target": "ES2022",
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
-		"lib": ["ES2022", "DOM"],
+		"lib": ["ES2023", "DOM"],
 		"types": ["node"],
 		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"allowImportingTsExtensions": true,
+		"rewriteRelativeImportExtensions": true,
+		"erasableSyntaxOnly": true,
+		"verbatimModuleSyntax": true,
 		"skipLibCheck": true,
 		"resolveJsonModule": true,
 		"forceConsistentCasingInFileNames": true
 	},
-	"include": ["../src/**/*.mjs"],
+	"include": ["../src/**/*.mts"],
 	"exclude": ["../node_modules", "../tests", "../coverage", "../dist", "../types"]
 }

@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T00:48:00-08:00 (1795596480)
+ *	@Last modified time: 2026-11-25T00:57:10-08:00 (1795597030)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -33,6 +33,8 @@ export default defineConfig(({ mode }) =>
 			root,
 			test: {
 				include: ["tests/**/*.test.vitest.mjs"],
+				// The Node capabilities for tests that import src/ modules without going through src/index.mts.
+				setupFiles: ["tests/setup.mjs"],
 				exclude: ["node_modules"],
 				environment: "node",
 				testTimeout: 30000,
@@ -46,7 +48,7 @@ export default defineConfig(({ mode }) =>
 				reporters: ["dot"],
 				coverage: {
 					provider: "v8",
-					include: ["src/**/*.mjs"],
+					include: ["src/**/*.mts"],
 					exclude: ["**/*.json", "tests/**"],
 					reporter: ["text", "html", "json-summary", "json"],
 					// Coverage must stay at 100%: a drop makes the coverage run (and so CI) fail. The runner executes every
