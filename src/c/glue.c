@@ -1,4 +1,4 @@
-/**
+/*
  *
  *	@Project: @cldmv/sqlite-wasm
  *	@Filename: /src/c/glue.c
@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T02:39:09-08:00 (1795603149)
+ *	@Last modified time: 2026-11-25T11:20:56-08:00 (1795634456)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
