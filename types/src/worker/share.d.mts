@@ -30,9 +30,12 @@ export interface broadcast {
     }) => void): void;
     close(): void;
 }
-/** A started worker. */
+/** A started worker. Its "error" event is an uncaught error inside it. */
 export interface worker extends endpoint {
     terminate(): void;
+    addEventListener(type: "message" | "error", listener: (event: {
+        data: unknown;
+    }) => void): void;
 }
 /** What a shared connection needs from the page: Web Locks, BroadcastChannel, a way to start the worker, tab ids. */
 export interface environment {

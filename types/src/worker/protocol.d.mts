@@ -26,6 +26,9 @@
  *
  * Nested transactions travel as `savepoint` / `release` / `revert` (ROLLBACK TO and RELEASE) calls inside the
  * outer transaction's requests; a failing call inside a savepoint undoes only that savepoint.
+ *
+ * `hold` asks the worker to take a Web Lock and keep it for the rest of its life. A shared connection's leader waits on
+ * that lock to learn when its worker has ended.
  */
 import { error } from "../api/error.mts";
 /** A bound parameter value. */
@@ -100,6 +103,9 @@ export type call = {
     name: string;
 } | {
     op: "close";
+} | {
+    op: "hold";
+    name: string;
 };
 /** Client -> host. */
 export interface request {

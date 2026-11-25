@@ -16,7 +16,8 @@
 /**
  * Sharing one database between tabs (`connect(..., { share: true })`), with fake tabs in one process: each has its own
  * Web Locks client, BroadcastChannel and Worker, and its workers run the real host with real SQLite on the in-memory
- * OPFS fake, so a handover really closes and reopens the database. `tab.kill()` is a tab going away.
+ * OPFS fake, so a handover really closes and reopens the database. `tab.kill()` is a tab going away; a worker's
+ * `terminate()` or `fail()` is the leader's worker ending while its tab stays open.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect, error } from "../../src/worker/client.mts";
@@ -30,6 +31,8 @@ const module = await loadSqliteModule();
 const script = "https://app.test/db-worker.mjs";
 const insert = "insert into t(v) values (?)";
 let origin;
+/** Whether workers get Web Locks (the host's hold then has none to take). */
+let weblocks;
 /** The database name; a new one per test, since the OPFS driver keeps state per name for the whole process. */
 let name;
 let counter = 0;
@@ -38,8 +41,12 @@ beforeEach(() => {
 	name = `app-${++counter}.db`;
 	const root = new fakedirectory();
 	const locks = fakelocks();
-	origin = fakeorigin((port) => {
-		listen(port, { wasm: module, root, locks });
+	weblocks = true;
+	origin = fakeorigin((port, worker) => {
+		// The OPFS driver's locks stay on the OPFS fake; the sharing locks (sqlite:...) go to the worker's own client in
+		// the origin, which lets go of them when the worker ends.
+		const routed = { request: (name, ...rest) => (name.startsWith("sqlite:") ? worker.locks : locks).request(name, ...rest) };
+		listen(port, { wasm: module, root, locks: weblocks ? routed : null });
 		// A worker that dies lets go of its files; here the host closes the database, rolling back an open transaction.
 		return (side) => side.postMessage({ id: 0, tx: false, calls: [{ op: "close" }] });
 	});
@@ -433,6 +440,199 @@ describe("handover", () => {
 		await vi.waitFor(() => expect(B.workers[0].dead).toBe(true));
 		await vi.waitFor(() => expect(c.info.leader).toBe(true));
 		expect(await count(c)).toBe(0);
+	});
+});
+
+describe("the leader's worker ending", () => {
+	/** Three tabs; A leads, and B then C wait for the lock in that order. */
+	async function three() {
+		const tabs = [origin.tab(), origin.tab(), origin.tab()];
+		const dbs = [];
+		for (const tab of tabs) dbs.push(await open(tab));
+		await create(dbs[0]);
+		return { tabs, dbs };
+	}
+
+	it("hands over: started writes are uncertain, reads are retried, and the tab carries on as a follower", async () => {
+		const {
+			tabs: [A],
+			dbs: [a, b, c]
+		} = await three();
+		const seen = [];
+		a.info.watch((leader) => seen.push(leader));
+		const worker = A.workers[0];
+		worker.hold = true;
+		// One call per tick, so each travels as its own request: a write and a read from the leader's own tab and from C.
+		const calls = [() => a.prepare(insert).run("a"), () => count(a), () => c.prepare(insert).run("c"), () => count(c)];
+		const sent = [];
+		for (const call of calls) {
+			sent.push(call());
+			await tick();
+		}
+		const [writes, lookups] = [
+			[sent[0], sent[2]],
+			[sent[1], sent[3]]
+		];
+		await vi.waitFor(() => expect(worker.held).toHaveLength(4));
+		worker.terminate();
+		for (const write of writes) {
+			const failure = await write.catch((thrown) => thrown);
+			expect(failure).toBeInstanceOf(error);
+			expect(failure).toMatchObject({
+				code: "SQLITE_BUSY",
+				message: expect.stringMatching(/leader changed while this request was running/)
+			});
+		}
+		expect(await Promise.all(lookups)).toEqual([0, 0]);
+		expect(b.info.leader).toBe(true);
+		expect(a.info.leader).toBe(false);
+		expect(seen).toEqual([false]);
+		expect(a.info.open).toBe(true);
+		expect(A.workers).toHaveLength(1);
+
+		await a.prepare(insert).run("after");
+		expect(await values(c)).toEqual(["after"]);
+		// A queued behind C again, so C leads next.
+		await b.close();
+		await vi.waitFor(() => expect(c.info.leader).toBe(true));
+		await a.prepare(insert).run("again");
+		expect(await values(a)).toEqual(["after", "again"]);
+		expect(a.info.leader).toBe(false);
+	});
+
+	it("ends the transaction its own tab had open: the rest fails, its rollback succeeds", async () => {
+		const {
+			tabs: [A],
+			dbs: [a, b]
+		} = await three();
+		await a.prepare(insert).run("kept");
+		const hold = gate();
+		let inserted = false;
+		const transaction = a.transaction(async (tx) => {
+			await tx.prepare(insert).run("a1");
+			inserted = true;
+			await hold.closed;
+			await tx.prepare(insert).run("a2");
+		});
+		await vi.waitFor(() => expect(inserted).toBe(true));
+		A.workers[0].terminate();
+		await vi.waitFor(() => expect(b.info.leader).toBe(true));
+		hold.open();
+		await expect(transaction).rejects.toMatchObject({ code: "SQLITE_BUSY", message: expect.stringMatching(/it was rolled back/) });
+		expect(await values(a)).toEqual(["kept"]);
+	});
+
+	it("leads again with a new worker when it is the only tab", async () => {
+		const A = origin.tab();
+		const a = await open(A);
+		await create(a);
+		await a.prepare(insert).run("before");
+		const seen = [];
+		a.info.watch((leader) => seen.push(leader));
+		A.workers[0].hold = true;
+		const read = values(a);
+		await vi.waitFor(() => expect(A.workers[0].held).toHaveLength(1));
+		A.workers[0].terminate();
+		expect(await read).toEqual(["before"]);
+		expect(seen).toEqual([false, true]);
+		expect(A.workers).toHaveLength(2);
+		expect(a.info.leader).toBe(true);
+		await a.prepare(insert).run("after");
+		expect(await values(a)).toEqual(["before", "after"]);
+		// A tab that joins now finds it under its new id.
+		const b = await open(origin.tab());
+		expect(b.info.leader).toBe(false);
+		expect(await count(b)).toBe(2);
+	});
+
+	it("treats an uncaught error in its worker as the worker ending, with or without Web Locks in the worker", async () => {
+		for (const locked of [true, false]) {
+			weblocks = locked;
+			name = `app-${++counter}.db`;
+			const A = origin.tab();
+			const a = await open(A);
+			const b = await open(origin.tab());
+			await create(a);
+			A.workers[0].fail("boom");
+			expect(A.workers[0].dead).toBe(true);
+			await vi.waitFor(() => expect(b.info.leader).toBe(true));
+			await a.prepare(insert).run("a");
+			expect(await values(b)).toEqual(["a"]);
+			// A second error from the retired worker changes nothing.
+			A.workers[0].fail("late");
+			expect(b.info.leader).toBe(true);
+			await b.close();
+			await a.close();
+		}
+	});
+
+	it("fails the open when the worker ends before the database is open, and the next tab leads", async () => {
+		origin.hold = true;
+		// Before the worker has taken its lock: only its error event tells.
+		const A = origin.tab();
+		const first = open(A);
+		await vi.waitFor(() => expect(A.workers).toHaveLength(1));
+		A.workers[0].fail();
+		await expect(first).rejects.toMatchObject({
+			code: "SQLITE_CANTOPEN",
+			message: expect.stringMatching(/ended before the database was open/)
+		});
+
+		// After it took the lock: the lock tells.
+		const B = origin.tab();
+		const second = open(B);
+		await vi.waitFor(() => expect(B.workers).toHaveLength(1));
+		const worker = B.workers[0];
+		await vi.waitFor(() => expect(worker.held).toHaveLength(2));
+		worker.port.postMessage(worker.held.shift());
+		await vi.waitFor(() => expect(worker.answers).toHaveLength(1));
+		await tick();
+		worker.terminate();
+		await expect(second).rejects.toMatchObject({ code: "SQLITE_CANTOPEN" });
+
+		origin.hold = false;
+		const c = await open(origin.tab());
+		expect(c.info.leader).toBe(true);
+	});
+
+	it("finishes its close when the worker ends during it", async () => {
+		const A = origin.tab();
+		const a = await open(A);
+		const b = await open(origin.tab());
+		await create(a);
+		A.workers[0].hold = true;
+		const closing = a.close();
+		await vi.waitFor(() => expect(A.workers[0].held).toHaveLength(1));
+		A.workers[0].terminate();
+		await closing;
+		expect(a.info.open).toBe(false);
+		await vi.waitFor(() => expect(b.info.leader).toBe(true));
+		expect(await count(b)).toBe(0);
+	});
+
+	it("finishes a close that waited behind a follower's transaction when the worker ends", async () => {
+		const {
+			tabs: [A],
+			dbs: [a, b, c]
+		} = await three();
+		const hold = gate();
+		let inserted = false;
+		const transaction = c.transaction(async (tx) => {
+			await tx.prepare(insert).run("c1");
+			inserted = true;
+			await hold.closed;
+			await tx.prepare(insert).run("c2");
+		});
+		await vi.waitFor(() => expect(inserted).toBe(true));
+		const closing = a.close();
+		await tick();
+		A.workers[0].terminate();
+		await closing;
+		expect(a.info.open).toBe(false);
+		await vi.waitFor(() => expect(b.info.leader).toBe(true));
+		hold.open();
+		await expect(transaction).rejects.toMatchObject({ code: "SQLITE_BUSY" });
+		expect(await count(b)).toBe(0);
 	});
 });
 

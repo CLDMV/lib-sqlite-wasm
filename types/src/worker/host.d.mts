@@ -28,6 +28,11 @@ export interface options extends Omit<opfsoptions, "timeout"> {
 export interface dependencies {
     connect(path: string, settings: settings): Promise<engine>;
     setup?: (db: database) => unknown;
+    /**
+     * Takes the Web Lock `name` for the rest of the worker's life; resolves to whether it could (false without Web
+     * Locks). A shared connection's leader tab waits on the same lock to learn that its worker is gone.
+     */
+    hold?: (name: string) => Promise<boolean>;
 }
 /** Answers requests arriving on `scope`. Returns a function that stops listening (the database stays as it is). */
 export declare function serve(scope: endpoint, dependencies: dependencies): () => void;

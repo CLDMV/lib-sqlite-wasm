@@ -17,7 +17,8 @@
  * One OPFS database shared by several tabs, in Chromium. Each "tab" is a same-origin iframe of the test page that
  * imports the client into its own realm, so it has its own Web Locks client, BroadcastChannels and workers. Removing
  * the iframe is the tab closing: the browser terminates its workers, releases its locks and closes its channels, the
- * same as for a closed tab.
+ * same as for a closed tab. Each tab also records the workers it starts, so a test can end the leader's worker while
+ * its tab stays open.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -27,16 +28,25 @@ const insert = "insert into t(v) values (?)";
 const frames = [];
 let counter = 0;
 
-/** A new tab: an iframe with the client loaded in it. */
+/** A new tab: an iframe with the client loaded in it. `workers` lists the workers it started. */
 async function tab() {
 	const frame = document.createElement("iframe");
 	document.body.append(frame);
 	frames.push(frame);
+	const workers = [];
+	const Base = frame.contentWindow.Worker;
+	frame.contentWindow.Worker = class extends Base {
+		constructor(...args) {
+			super(...args);
+			workers.push(this);
+		}
+	};
 	// A function made in the iframe's realm imports into that realm, so the client runs on the iframe's own globals.
 	const loaded = await new frame.contentWindow.Function("url", "return import(url)")(library);
 	return {
 		connect: (path, options = {}) => loaded.default.connect(script, path, { share: true, timeout: 10000, ...options }),
-		close: () => frame.remove()
+		close: () => frame.remove(),
+		workers
 	};
 }
 
@@ -130,5 +140,55 @@ describe("sharing between tabs", () => {
 		expect(b.info.leader).toBe(true);
 		expect(await count(b)).toBe(20);
 		expect(await b.prepare("select count(distinct v) from t").pluck.get()).toBe(20);
+	});
+
+	it("hands over when the leader's worker is terminated while its tab stays open", async () => {
+		const path = unique();
+		const tabs = await Promise.all([tab(), tab(), tab()]);
+		const a = await tabs[0].connect(path);
+		const b = await tabs[1].connect(path);
+		const c = await tabs[2].connect(path);
+		await a.execute("create table t(id integer primary key, v)");
+		await a.prepare(insert).run("before");
+		const changes = [];
+		a.info.watch((leader) => changes.push(leader));
+
+		// The write is running in the leader's worker when it is terminated; the read waits behind it.
+		const write = c.prepare("insert into t(v) values (pause(2000))").run();
+		const read = b.prepare("select count(*) from t").pluck.get();
+		await sleep(500);
+		tabs[0].workers[0].terminate();
+
+		const failure = await write.catch((thrown) => thrown);
+		expect(failure).toMatchObject({ code: "SQLITE_BUSY", number: 5 });
+		expect(failure.message).toMatch(/leader changed while this request was running/);
+		const rows = await read;
+		expect([1, 2]).toContain(rows);
+		await vi.waitFor(() => expect(b.info.leader).toBe(true), { timeout: 15000 });
+		expect(a.info.leader).toBe(false);
+		expect(changes).toEqual([false]);
+		expect(tabs[0].workers).toHaveLength(1);
+
+		// The tab whose worker ended goes on through the new leader.
+		await a.prepare(insert).run("after");
+		expect(await count(c)).toBe(rows + 1);
+		expect(await count(a)).toBe(rows + 1);
+	});
+
+	it("starts a new worker when the only tab's worker reports an uncaught error", async () => {
+		const path = unique();
+		const only = await tab();
+		const a = await only.connect(path);
+		await a.execute("create table t(id integer primary key, v)");
+		await a.prepare(insert).run("before");
+		const changes = [];
+		a.info.watch((leader) => changes.push(leader));
+
+		expect(await a.prepare("select crash()").pluck.get()).toBe(1);
+		await vi.waitFor(() => expect(changes).toEqual([false, true]), { timeout: 15000 });
+		expect(only.workers).toHaveLength(2);
+		expect(a.info.leader).toBe(true);
+		await a.prepare(insert).run("after");
+		expect(await a.prepare("select v from t order by id").pluck.all()).toEqual(["before", "after"]);
 	});
 });

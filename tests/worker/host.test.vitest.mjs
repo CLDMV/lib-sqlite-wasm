@@ -360,6 +360,42 @@ describe("host", () => {
 		expect(answered).not.toHaveBeenCalled();
 	});
 
+	it("holds a Web Lock for the worker's life when asked, and says when it can't", async () => {
+		const hold = { op: "hold", name: "sqlite:x.db:worker:1" };
+		// Without a hold dependency there is nothing to hold.
+		expect(await start({ connect: async () => fakeengine() }).send([hold])).toEqual([{ ok: true, value: false }]);
+
+		/** listen() on a MessageChannel, sending one hold. */
+		const held = async (options) => {
+			const { port1, port2 } = new MessageChannel();
+			ports.push(port1, port2);
+			listen(port2, options);
+			const answer = new Promise((resolve) => port1.addEventListener("message", (event) => resolve(event.data.outcomes), { once: true }));
+			port1.start();
+			port1.postMessage({ id: 1, tx: false, calls: [hold] });
+			return answer;
+		};
+		const granted = [];
+		const manager = {
+			request(name, options, callback) {
+				granted.push(name);
+				const result = callback({ name });
+				expect(result).toBeInstanceOf(Promise);
+				return result;
+			}
+		};
+		expect(await held({ locks: manager })).toEqual([{ ok: true, value: true }]);
+		expect(granted).toEqual(["sqlite:x.db:worker:1"]);
+		// navigator.locks when no manager is given.
+		vi.stubGlobal("navigator", { locks: manager });
+		expect(await held({})).toEqual([{ ok: true, value: true }]);
+		vi.stubGlobal("navigator", undefined);
+		expect(await held({})).toEqual([{ ok: true, value: false }]);
+		expect(await held({ locks: null })).toEqual([{ ok: true, value: false }]);
+		const refusing = { request: () => Promise.reject(new DOMException("no", "NotSupportedError")) };
+		expect(await held({ locks: refusing })).toEqual([{ ok: true, value: false }]);
+	});
+
 	it("listens on the worker's global scope by default", async () => {
 		const listeners = [];
 		vi.stubGlobal("addEventListener", (type, listener) => listeners.push(listener));

@@ -39,7 +39,7 @@ import { error } from "../api/error.mts";
 import type { database } from "../api/database.mts";
 import { use } from "../api/runtime.mts";
 import * as opfs from "../vfs/opfs.mts";
-import type { options as opfsoptions } from "../vfs/opfs.mts";
+import type { locks, options as opfsoptions } from "../vfs/opfs.mts";
 import { install } from "../vfs/registry.mts";
 import { open, type engine } from "./engine.mts";
 import { serialize, type call, type endpoint, type failure, type outcome, type request, type settings } from "./protocol.mts";
@@ -56,6 +56,11 @@ export interface options extends Omit<opfsoptions, "timeout"> {
 export interface dependencies {
 	connect(path: string, settings: settings): Promise<engine>;
 	setup?: (db: database) => unknown;
+	/**
+	 * Takes the Web Lock `name` for the rest of the worker's life; resolves to whether it could (false without Web
+	 * Locks). A shared connection's leader tab waits on the same lock to learn that its worker is gone.
+	 */
+	hold?: (name: string) => Promise<boolean>;
 }
 
 /** Statements that may share a transaction with their neighbours. */
@@ -121,6 +126,8 @@ export function serve(scope: endpoint, dependencies: dependencies): () => void {
 				return need().execute(`ROLLBACK TO ${quoted(item.name)}; RELEASE ${quoted(item.name)}`);
 			case "close":
 				return closedb();
+			case "hold":
+				return dependencies.hold ? dependencies.hold(item.name) : false;
 			default:
 				throw new error(`unknown operation "${(item as { op: unknown }).op}"`, SQLITE_MISUSE);
 		}
@@ -317,6 +324,8 @@ export function serve(scope: endpoint, dependencies: dependencies): () => void {
  */
 export function listen(scope: endpoint = globalThis as unknown as endpoint, options: options = {}): () => void {
 	const { wasm, setup, ...driver } = options;
+	const lockmanager =
+		driver.locks === undefined ? (globalThis as unknown as { navigator?: { locks?: locks } }).navigator?.locks : driver.locks;
 	// The host always needs the OPFS driver, so it is bundled with it and registered here rather than imported on first
 	// open (a lazy import() inside a worker also trips up test runners that rewrite dynamic imports).
 	install("opfs", () => Promise.resolve(opfs));
@@ -325,6 +334,17 @@ export function listen(scope: endpoint = globalThis as unknown as endpoint, opti
 	if (wasm !== undefined) use(() => load(wasm));
 	return serve(scope, {
 		connect: (path, settings) => open(path, { ...settings, storage: settings.storage ?? "opfs" }, driver),
+		// The lock is never let go: the browser releases it when the worker ends, however it ends.
+		hold: (name) =>
+			new Promise<boolean>((resolve) => {
+				if (!lockmanager) return resolve(false);
+				lockmanager
+					.request(name, {}, () => {
+						resolve(true);
+						return new Promise<void>(() => {});
+					})
+					.catch(() => resolve(false));
+			}),
 		...(setup === undefined ? {} : { setup })
 	});
 }

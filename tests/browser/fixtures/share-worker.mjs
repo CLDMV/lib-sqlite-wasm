@@ -14,7 +14,8 @@
  */
 
 // The database worker the sharing tests start: the host, plus pause(ms), which keeps a statement running so a test can
-// close the leader's tab while a write is still in its worker.
+// close the leader's tab while a write is still in its worker, and crash(), which throws an uncaught error in the worker
+// right after the statement.
 import { listen } from "../../../src/worker/host.mts";
 
 listen(globalThis, {
@@ -24,6 +25,12 @@ listen(globalThis, {
 			const end = Date.now() + ms;
 			while (Date.now() < end);
 			return ms;
+		});
+		db.fn.scalar("crash", () => {
+			setTimeout(() => {
+				throw new Error("crash");
+			});
+			return 1;
 		});
 	}
 });

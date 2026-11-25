@@ -21,16 +21,17 @@
  *   released when the callback's promise settles. `signal` aborts a waiting request (it rejects with the reason).
  * - A BroadcastChannel delivers a structured clone of each message, in a microtask, to every other open channel of the
  *   same name in the origin, never to itself.
- * - A worker runs whatever `start(port)` puts on the other end of a MessageChannel. `hold` keeps the tab's messages
- *   from reaching it (they are dropped if the worker dies first), `mute` drops its answers (`answers` still records
- *   them). `terminate()` drops
- *   everything in flight and calls the stop function `start` returned, with the tab-side port.
+ * - A worker runs whatever `start(port, worker)` puts on the other end of a MessageChannel. `hold` keeps the tab's
+ *   messages from reaching it (they are dropped if the worker dies first), `mute` drops its answers (`answers` still
+ *   records them). `worker.locks` is the worker's own Web Locks client in the origin. `terminate()` drops everything in
+ *   flight, calls the stop function `start` returned (with the tab-side port) and releases the worker's locks, the way
+ *   a browser does when a worker ends. `fail(message)` fires an "error" event, as an uncaught error in a worker does.
  * - `kill()` releases every lock the tab holds, forgets the requests it is waiting on, closes its channels and
  *   terminates its workers. The tab's JavaScript keeps running (it can't be stopped here), but nothing it does reaches
  *   anyone any more.
  */
 
-/** A worker whose other end runs `start(port)`. */
+/** A worker whose other end runs `start(port, worker)`. */
 export class fakeworker {
 	hold = false;
 	mute = false;
@@ -39,9 +40,15 @@ export class fakeworker {
 	sent = [];
 	answers = [];
 	#listeners = new Set();
+	#errors = new Set();
 	#stop;
+	#release;
 
-	constructor(start, ports) {
+	/** `client(worker)` makes the worker's Web Locks client: `{ locks, release }`. */
+	constructor(start, ports, client) {
+		const owned = client(this);
+		this.locks = owned.locks;
+		this.#release = owned.release;
 		const { port1, port2 } = new MessageChannel();
 		ports.push(port1, port2);
 		this.port = port1;
@@ -51,7 +58,7 @@ export class fakeworker {
 			if (this.mute) return;
 			for (const listener of this.#listeners) listener({ data: event.data });
 		};
-		this.#stop = start(port2);
+		this.#stop = start(port2, this);
 	}
 
 	postMessage(message) {
@@ -69,19 +76,27 @@ export class fakeworker {
 
 	addEventListener(type, listener) {
 		if (type === "message") this.#listeners.add(listener);
+		else this.#errors.add(listener);
 	}
 
 	removeEventListener(type, listener) {
 		this.#listeners.delete(listener);
+		this.#errors.delete(listener);
 	}
 
 	start() {}
+
+	/** An uncaught error inside the worker; it keeps running. */
+	fail(message = "boom") {
+		for (const listener of this.#errors) listener({ message });
+	}
 
 	terminate() {
 		if (this.dead) return;
 		this.dead = true;
 		this.held = [];
 		this.#stop?.(this.port);
+		this.#release();
 	}
 }
 
@@ -111,16 +126,18 @@ export function fakeorigin(start) {
 		else locks.delete(name);
 	};
 
-	const tab = () => {
-		const self = { id: ++tabs, dead: false, workers: [], channels: new Set(), waiting: new Set() };
-
-		self.locks = {
+	/**
+	 * A Web Locks client for `self` (a tab or a worker, with `dead` and `waiting`): `locks` to request with, and
+	 * `release()` to let go of every lock it holds or waits for, as when it goes away.
+	 */
+	const client = (self) => {
+		const manager = {
 			request(name, options, callback) {
 				if (self.dead) return new Promise(() => {});
 				return new Promise((resolve, reject) => {
 					const found = state(name);
 					const waiter = {
-						tab: self,
+						owner: self,
 						grant() {
 							self.waiting.delete(waiter);
 							found.holder = waiter;
@@ -166,6 +183,25 @@ export function fakeorigin(start) {
 				});
 			}
 		};
+		const release = () => {
+			self.dead = true;
+			for (const found of locks.values()) {
+				found.queue = found.queue.filter((waiter) => waiter.owner !== self);
+			}
+			for (const [name, found] of [...locks]) {
+				if (found.holder?.owner === self) {
+					found.holder = undefined;
+					next(name);
+				}
+			}
+		};
+		return { locks: manager, release };
+	};
+
+	const tab = () => {
+		const self = { id: ++tabs, dead: false, workers: [], channels: new Set(), waiting: new Set() };
+		const own = client(self);
+		self.locks = own.locks;
 
 		self.BroadcastChannel = class {
 			#listeners = new Set();
@@ -209,7 +245,7 @@ export function fakeorigin(start) {
 
 		self.Worker = class extends fakeworker {
 			constructor(url, options) {
-				super(start, ports);
+				super(start, ports, (worker) => client(Object.assign(worker, { waiting: new Set() })));
 				this.url = url;
 				this.options = options;
 				this.hold = origin.hold;
@@ -221,16 +257,7 @@ export function fakeorigin(start) {
 
 		/** The tab goes away: its locks are released, its channels closed, its workers terminated. */
 		self.kill = () => {
-			self.dead = true;
-			for (const found of locks.values()) {
-				found.queue = found.queue.filter((waiter) => waiter.tab !== self);
-			}
-			for (const [name, found] of [...locks]) {
-				if (found.holder?.tab === self) {
-					found.holder = undefined;
-					next(name);
-				}
-			}
+			own.release();
 			for (const channel of self.channels) channel.close();
 			for (const worker of self.workers) worker.terminate();
 		};

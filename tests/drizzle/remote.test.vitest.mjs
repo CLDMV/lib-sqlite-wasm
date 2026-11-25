@@ -16,7 +16,8 @@
 /**
  * Drizzle over the worker client (the main-thread setup): the host runs behind a MessageChannel instead of a worker,
  * with the real sqlite3.wasm. The shared scenarios, then what only the proxy wiring has: batches, queued transactions,
- * migrations through `sqlite-proxy`'s migrator, and Drizzle's own `sqlite-proxy` driver on `db.proxy`.
+ * migrations through `sqlite-proxy`'s migrator, and Drizzle's own `sqlite-proxy` driver on `db.proxy`. The shared
+ * scenarios also run on a follower tab of a shared connection (`share: true`), with fake tabs on the OPFS fake.
  */
 import { asc, count, eq, sql } from "drizzle-orm";
 import { drizzle as proxied } from "drizzle-orm/sqlite-proxy";
@@ -26,6 +27,8 @@ import { drizzle, migrate } from "../../src/drizzle.mts";
 import { loadSqliteModule } from "../../src/core/loader.mts";
 import { connect } from "../../src/worker/client.mts";
 import { listen } from "../../src/worker/host.mts";
+import { fakedirectory, fakelocks } from "../fakes/opfs.mjs";
+import { fakeorigin } from "../fakes/tabs.mjs";
 import { bundled, folder } from "./fixtures/data.mjs";
 import * as schema from "./fixtures/schema.mjs";
 import { defineSuite } from "./suite.mjs";
@@ -36,6 +39,7 @@ let counter = 0;
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
 });
 
 /** A fresh in-memory database behind a client. */
@@ -49,6 +53,39 @@ async function open() {
 			await raw.close();
 			port1.close();
 			port2.close();
+		}
+	};
+}
+
+/** A fresh OPFS database shared by two fake tabs; Drizzle runs on the follower, the leader's tab runs the worker. */
+async function shared() {
+	const root = new fakedirectory();
+	const locks = fakelocks();
+	const origin = fakeorigin((port, worker) => {
+		const routed = { request: (name, ...rest) => (name.startsWith("sqlite:") ? worker.locks : locks).request(name, ...rest) };
+		listen(port, { wasm: module, root, locks: routed });
+		return (side) => side.postMessage({ id: 0, tx: false, calls: [{ op: "close" }] });
+	});
+	const path = `drizzle-shared-${process.pid}-${++counter}.db`;
+	/** Connects from `tab`; the page's globals are read synchronously, so they are only stubbed for the call. */
+	const join = (tab) => {
+		vi.stubGlobal("navigator", tab.navigator);
+		vi.stubGlobal("BroadcastChannel", tab.BroadcastChannel);
+		vi.stubGlobal("Worker", tab.Worker);
+		try {
+			return connect("https://app.test/db-worker.mjs", path, { share: true, timeout: 2000 });
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	};
+	const leader = await join(origin.tab());
+	const raw = await join(origin.tab());
+	return {
+		raw,
+		close: async () => {
+			await raw.close();
+			await leader.close();
+			for (const port of origin.ports) port.close();
 		}
 	};
 }
@@ -74,6 +111,18 @@ defineSuite({
 			const pending = context.db.select().from(users).all();
 			expect(pending).toBeInstanceOf(Promise);
 			return pending;
+		});
+	}
+});
+
+defineSuite({
+	name: "drizzle over a shared client, from a follower tab",
+	sync: false,
+	open: shared,
+	migrate: apply,
+	extra(context) {
+		it("runs on a follower", () => {
+			expect(context.raw.info.leader).toBe(false);
 		});
 	}
 });

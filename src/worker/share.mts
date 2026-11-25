@@ -43,11 +43,17 @@
  * - A leader that closes keeps serving until its own earlier calls and an open follower transaction are done, then
  *   answers everything it has passed to its worker, closes the database and releases the lock. Follower requests it
  *   didn't pass on are resent to the next leader. A follower that closes waits for its own answers and stops listening.
+ * - A leader whose worker ends while the tab stays open (the browser killed it, it was terminated, or it reported an
+ *   uncaught error, after which it is terminated) hands over as if its tab had gone: it stops answering, releases the
+ *   leader lock and joins again as a follower under a new tab id, so followers see a new leader even when this tab is
+ *   elected again. Its own calls follow the same rules as a follower's: writes its worker had started reject with
+ *   SQLITE_BUSY, everything else is resent to the next leader. The worker holds the lock `sqlite:<path>:worker:<id>`
+ *   for its whole life and the leader waits on it, so the grant is the signal that the worker has ended.
  *
  * Connection state (attached databases, PRAGMA settings, functions registered outside the host's `setup`) lives in the
  * leader's worker and doesn't move with a handover.
  */
-import { SQLITE_BUSY, SQLITE_MISUSE } from "../core/constants.mts";
+import { SQLITE_BUSY, SQLITE_CANTOPEN, SQLITE_MISUSE } from "../core/constants.mts";
 import {
 	error,
 	serialize,
@@ -75,9 +81,10 @@ export interface broadcast {
 	close(): void;
 }
 
-/** A started worker. */
+/** A started worker. Its "error" event is an uncaught error inside it. */
 export interface worker extends endpoint {
 	terminate(): void;
+	addEventListener(type: "message" | "error", listener: (event: { data: unknown }) => void): void;
 }
 
 /** What a shared connection needs from the page: Web Locks, BroadcastChannel, a way to start the worker, tab ids. */
@@ -91,7 +98,10 @@ export interface environment {
 /** Called with the new value whenever this tab becomes, or stops being, the leader. */
 export type watcher = (leader: boolean) => void;
 
-/** A request this tab made, until it is answered. `sent` is the leader it went to; `started` that the leader began it (writes only). */
+/**
+ * A request this tab made, until it is answered. `sent` is the leader it went to (none while no leader is known);
+ * `started` that the leader began it (writes only).
+ */
 interface own {
 	id: number;
 	request: request;
@@ -120,6 +130,7 @@ const uncertain: failure = serialize(
 );
 const rolledback: failure = serialize(new error("the leader changed during this transaction: it was rolled back", SQLITE_BUSY));
 const closed: failure = serialize(new error("the database is closed", SQLITE_MISUSE));
+const ended: failure = serialize(new error("the database worker ended before the database was open", SQLITE_CANTOPEN));
 
 /** Whether running `request` twice is harmless. */
 export function reads(request: request): boolean {
@@ -158,7 +169,8 @@ export function ambient(target: string | URL): environment {
 /** The stand-in for the worker in a shared connection. */
 export class coordinator {
 	readonly #env: environment;
-	readonly #me: string;
+	/** This tab's id; a new one after its worker ended, so that followers notice the handover. */
+	#me: string;
 	readonly #messages = new Set<(event: { data: unknown }) => void>();
 	readonly #errors = new Set<(event: { message?: string }) => void>();
 	readonly #watchers = new Set<watcher>();
@@ -179,7 +191,10 @@ export class coordinator {
 
 	// Leader state.
 	#worker: worker | undefined;
-	readonly #inflight = new Map<number, (outcomes: outcome[]) => void>();
+	/** Aborts the wait on the worker's lock. */
+	#watchdog: AbortController | undefined;
+	/** Resolves with the worker's outcomes, or with undefined when the worker ended first. */
+	readonly #inflight = new Map<number, (outcomes: outcome[] | undefined) => void>();
 	#next = 1;
 	#queue: entry[] = [];
 	/** The tab whose transaction is open, and the watch on that tab's lock. */
@@ -245,11 +260,16 @@ export class coordinator {
 		const channel = this.#env.channel(`sqlite:${this.#path}`);
 		this.#channel = channel;
 		channel.addEventListener("message", this.#hear);
+		this.#join();
+	}
+
+	/** Claims this tab's lock, queues for the leader lock, and asks who leads now. */
+	#join(): void {
 		this.#env.locks
 			.request(`sqlite:${this.#path}:tab:${this.#me}`, {}, () => new Promise<void>((done) => (this.#untab = done)))
 			.catch(noop);
 		this.#env.locks.request(`sqlite:${this.#path}:leader`, { signal: this.#abort.signal }, () => this.#lead()).catch(noop);
-		channel.postMessage({ type: "hello", tab: this.#me } satisfies notice);
+		(this.#channel as broadcast).postMessage({ type: "hello", tab: this.#me } satisfies notice);
 	}
 
 	/** Holds the leader lock: starts the worker and opens the database, then serves until close. */
@@ -257,19 +277,24 @@ export class coordinator {
 		const worker = this.#env.spawn();
 		this.#worker = worker;
 		worker.addEventListener("message", this.#answer);
+		worker.addEventListener("error", () => this.#crashed(worker));
 		worker.start?.();
-		const [result] = (await this.#ask({ id: 0, tx: false, calls: [{ op: "open", path: this.#path, options: this.#settings }] })) as [
-			outcome
-		];
+		// The worker takes a lock it never lets go of, and this tab waits for the same lock: the grant means the worker ended.
+		const name = `sqlite:${this.#path}:worker:${this.#env.id()}`;
+		const holding = this.#ask({ id: 0, tx: false, calls: [{ op: "hold", name }] });
+		const opening = this.#ask({ id: 0, tx: false, calls: [{ op: "open", path: this.#path, options: this.#settings }] });
+		const [hold] = (await holding) ?? [];
+		if ((hold as { value?: unknown } | undefined)?.value === true) this.#watch(worker, name);
+		const [result] = ((await opening) ?? [{ ok: false, error: ended }]) as [outcome];
 		if (!result.ok) {
-			worker.terminate();
+			this.#retire(worker);
 			this.#fail(result);
 			return;
 		}
 		if (this.#stopped) {
 			// This tab closed while its worker was opening the database: close it again and let the next tab lead.
 			await this.#ask({ id: 0, tx: false, calls: [{ op: "close" }] });
-			worker.terminate();
+			this.#retire(worker);
 			return;
 		}
 		const info = result.value as opened;
@@ -355,10 +380,11 @@ export class coordinator {
 	}
 
 	#route(entry: own): void {
-		// Only the open request is made before a leader is known, and it doesn't come through here.
-		const current = this.#current as string;
+		const current = this.#current;
 		entry.sent = current;
 		entry.started = false;
+		// Between a leader whose worker ended and the next one, requests wait here until #reroute sends them on.
+		if (current === undefined) return;
 		if (current === this.#me) this.#enqueue({ tab: this.#me, request: entry.request, write: entry.write, own: entry });
 		else
 			(this.#channel as broadcast).postMessage({
@@ -408,9 +434,11 @@ export class coordinator {
 			}
 			if (request.calls.some((each) => each.op === "commit" || each.op === "rollback")) this.#unhold();
 		}
-		if (item.tab !== this.#me && item.write)
+		if (item.write && item.own) item.own.started = true;
+		else if (item.write)
 			(this.#channel as broadcast).postMessage({ type: "started", leader: this.#me, tab: item.tab, id: request.id } satisfies notice);
-		void this.#ask(request).then((outcomes) => this.#reply(item, outcomes));
+		// No outcomes: the worker ended first, and the request is settled or resent as after a handover.
+		void this.#ask(request).then((outcomes) => outcomes && this.#reply(item, outcomes));
 	}
 
 	#reply(item: entry, outcomes: outcome[]): void {
@@ -447,8 +475,8 @@ export class coordinator {
 		this.#ownerwatch = undefined;
 	}
 
-	/** Sends `item` to this tab's worker; resolves with the worker's outcomes. */
-	#ask(item: request): Promise<outcome[]> {
+	/** Sends `item` to this tab's worker; resolves with the worker's outcomes, or with undefined if the worker ends first. */
+	#ask(item: request): Promise<outcome[] | undefined> {
 		const id = this.#next++;
 		return new Promise((resolve) => {
 			this.#inflight.set(id, resolve);
@@ -458,7 +486,7 @@ export class coordinator {
 
 	readonly #answer = (event: { data: unknown }): void => {
 		const { id, outcomes } = event.data as response;
-		const resolve = this.#inflight.get(id) as (outcomes: outcome[]) => void;
+		const resolve = this.#inflight.get(id) as (outcomes: outcome[] | undefined) => void;
 		this.#inflight.delete(id);
 		resolve(outcomes);
 	};
@@ -466,7 +494,7 @@ export class coordinator {
 	/** The link's close, with any calls sent before it in the same message. */
 	async #closing(item: request, at: number): Promise<void> {
 		const before = item.calls.slice(0, at);
-		const outcomes = before.length > 0 ? await this.#submit({ id: item.id, tx: item.tx, calls: before }) : [];
+		const outcomes: outcome[] = before.length > 0 ? await this.#submit({ id: item.id, tx: item.tx, calls: before }) : [];
 		await Promise.all([...this.#own.values()].map((entry) => entry.promise));
 		if (this.#current === this.#me) await new Promise<void>((done) => this.#enqueue({ tab: this.#me, request: item, write: false, done }));
 		else this.#stop();
@@ -480,9 +508,60 @@ export class coordinator {
 		this.#queue = [];
 		// The worker answers in order, so once the close is answered everything before it has been answered too.
 		await this.#ask({ id: 0, tx: false, calls: [{ op: "close" }] });
-		(this.#worker as worker).terminate();
+		// The worker may have ended during the close (#crashed retired it then).
+		if (this.#worker) this.#retire(this.#worker);
 		this.#stop();
 		done();
+	}
+
+	/** Waits on the lock the worker holds for its life: the grant means the worker ended. */
+	#watch(worker: worker, name: string): void {
+		const watchdog = new AbortController();
+		this.#watchdog = watchdog;
+		this.#env.locks.request(name, { signal: watchdog.signal }, () => this.#crashed(worker)).catch(noop);
+	}
+
+	/** Stops using `worker`: no more watching its lock, and it is terminated (again, if it ended on its own). */
+	#retire(worker: worker): void {
+		this.#watchdog?.abort();
+		this.#watchdog = undefined;
+		this.#worker = undefined;
+		worker.removeEventListener("message", this.#answer);
+		worker.terminate();
+	}
+
+	/**
+	 * This tab's worker ended while the tab stays open. Every call waiting on it loses its answer. While opening or
+	 * closing, #lead or #finish carries on from there. A leader hands over: it drops what it queued, rejects its own
+	 * started writes as uncertain (followers do the same with theirs when the next leader announces itself), releases
+	 * the leader lock and joins again as a follower with a new id.
+	 */
+	#crashed(worker: worker): void {
+		if (worker !== this.#worker) return;
+		this.#retire(worker);
+		const lost = [...this.#inflight.values()];
+		this.#inflight.clear();
+		for (const resolve of lost) resolve(undefined);
+		if (!this.#leading || this.#halted) return;
+		const closing = this.#queue.find((item) => item.done);
+		this.#queue = [];
+		this.#unhold();
+		this.#current = undefined;
+		this.#flip(false);
+		const resign = this.#resign;
+		this.#resign = noop;
+		if (closing) {
+			// This tab was closing anyway: it doesn't join again.
+			this.#stop();
+			resign();
+			return (closing.done as () => void)();
+		}
+		this.#reroute();
+		this.#untab();
+		this.#me = this.#env.id();
+		this.#abort = new AbortController();
+		this.#join();
+		resign();
 	}
 
 	/** Lets go of everything: the leader lock (held or awaited), this tab's lock and the channel. Each step may repeat. */
