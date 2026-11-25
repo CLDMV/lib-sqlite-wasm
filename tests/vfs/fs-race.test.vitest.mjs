@@ -1,0 +1,122 @@
+/**
+ *
+ *	@Project: @cldmv/sqlite-wasm
+ *	@Filename: /tests/vfs/fs-race.test.vitest.mjs
+ *	@Date: 2026-11-25T02:30:00-08:00 (1795602600)
+ *	@Author: Nate Corcoran <CLDMV>
+ *	@Email: <Shinrai@users.noreply.github.com>
+ *	-----
+ *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
+ *	@Last modified time: 2026-11-25T02:30:00-08:00 (1795602600)
+ *	-----
+ *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
+ *
+ */
+
+/**
+ * The owner lock's race paths: another process changing the lock directory between two of our steps. Two real
+ * processes can't hit those windows on demand, so node:fs is wrapped and the other process's step is played in.
+ */
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { create } from "../../src/vfs/fs.mts";
+import { cleanup, plantLock, scratch } from "./fs-helpers.mjs";
+
+vi.mock("node:fs", async (importOriginal) => {
+	const real = await importOriginal();
+	return { ...real, renameSync: vi.fn(real.renameSync), readFileSync: vi.fn(real.readFileSync) };
+});
+
+const READWRITE_CREATE_MAIN = 0x2 | 0x4 | 0x100;
+const OK = 0;
+
+let nextId = 3_000_000;
+const id = () => nextId++;
+
+/** An fs error with `code`. */
+const failure = (code) => Object.assign(new Error(code), { code });
+
+/** The real implementations behind the mocks. */
+const real = await vi.importActual("node:fs");
+
+afterEach(() => {
+	vi.mocked(renameSync).mockReset().mockImplementation(real.renameSync);
+	vi.mocked(readFileSync).mockReset().mockImplementation(real.readFileSync);
+	cleanup();
+});
+
+/** Opens `path` as a main database, closes it again and checks that the lock went with it. */
+function openAndClose(path) {
+	const driver = create({ timeout: 0 });
+	const file = id();
+	expect(driver.open(path, file, READWRITE_CREATE_MAIN)).toBe(OK);
+	expect(JSON.parse(real.readFileSync(`${path}.lock/owner.json`, "utf8")).pid).toBe(process.pid);
+	driver.close(file);
+	expect(existsSync(`${path}.lock`)).toBe(false);
+}
+
+describe("owner lock races", () => {
+	it("retries when the lock disappears between our attempt and reading its owner", () => {
+		const path = join(scratch(), "db");
+		// Our rename sees a lock that its owner releases right after.
+		vi.mocked(renameSync).mockImplementationOnce(() => {
+			throw failure("EEXIST");
+		});
+		openAndClose(path);
+	});
+
+	it("retries when the stale lock is removed under a takeover in progress", () => {
+		const path = join(scratch(), "db");
+		plantLock(`${path}.lock`);
+		vi.mocked(renameSync)
+			.mockImplementationOnce(real.renameSync) // our attempt: the stale lock is there
+			.mockImplementationOnce((from) => {
+				// Another taker removes the stale lock before our reap marker lands in it.
+				real.rmSync(`${path}.lock`, { recursive: true });
+				rmSync(from, { recursive: true });
+				throw failure("ENOENT");
+			});
+		openAndClose(path);
+	});
+
+	it("backs off when a new owner replaced the stale one before our takeover started", () => {
+		const path = join(scratch(), "db");
+		const stale = plantLock(`${path}.lock`);
+		const fresh = JSON.stringify({ ...stale, started: "a different lock" });
+		vi.mocked(readFileSync)
+			.mockImplementationOnce(real.readFileSync) // the stale owner
+			.mockImplementationOnce(() => fresh); // checked again after claiming the reap marker
+		const driver = create({ timeout: 0 });
+		const file = id();
+		expect(driver.open(path, file, READWRITE_CREATE_MAIN)).toBe(OK);
+		// Our reap marker was withdrawn; the takeover then went ahead on the next round.
+		expect(readdirSync(`${path}.lock`)).toEqual(["owner.json"]);
+		driver.close(file);
+	});
+
+	it("carries on when another taker removed the stale lock first", () => {
+		const path = join(scratch(), "db");
+		plantLock(`${path}.lock`);
+		vi.mocked(renameSync)
+			.mockImplementationOnce(real.renameSync) // our attempt
+			.mockImplementationOnce(real.renameSync) // our reap marker
+			.mockImplementationOnce(() => {
+				real.rmSync(`${path}.lock`, { recursive: true });
+				throw failure("ENOENT");
+			});
+		openAndClose(path);
+	});
+
+	it("reports an error while removing a stale lock", () => {
+		const path = join(scratch(), "db");
+		plantLock(`${path}.lock`);
+		vi.mocked(renameSync)
+			.mockImplementationOnce(real.renameSync)
+			.mockImplementationOnce(real.renameSync)
+			.mockImplementationOnce(() => {
+				throw failure("EACCES");
+			});
+		expect(() => create({ timeout: 0 }).open(path, id(), READWRITE_CREATE_MAIN)).toThrow(/EACCES/);
+	});
+});
