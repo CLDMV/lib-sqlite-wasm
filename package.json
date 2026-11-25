@@ -73,6 +73,15 @@
 			"types": "./types/src/worker/client.d.mts",
 			"import": "./dist/worker.mjs"
 		},
+		"./drizzle": {
+			"sqlite-wasm-dev": {
+				"types": "./src/drizzle.mts",
+				"import": "./src/drizzle.mts"
+			},
+			"types": "./types/src/drizzle.d.mts",
+			"import": "./dist/drizzle.mjs",
+			"require": "./dist/drizzle.cjs"
+		},
 		"./package.json": "./package.json"
 	},
 	"engines": {
@@ -83,6 +92,14 @@
 			"name": "node",
 			"version": ">=22.22.0",
 			"onFail": "error"
+		}
+	},
+	"peerDependencies": {
+		"drizzle-orm": "^0.45.0"
+	},
+	"peerDependenciesMeta": {
+		"drizzle-orm": {
+			"optional": true
 		}
 	},
 	"scripts": {
@@ -96,7 +113,7 @@
 		"types:check": "tsc -p .configs/tsconfig.json --noEmit",
 		"pretest": "npm run build",
 		"test": "node tests/run-vitest.mjs && npm run test:cjs && npm run test:dist && npm run test:browser",
-		"test:cjs": "npm run build && node --test tests/cjs/entry.test.cjs",
+		"test:cjs": "npm run build && node --test tests/cjs/entry.test.cjs tests/cjs/drizzle.test.cjs",
 		"test:dist": "npm run build && node tests/run-vitest.mjs --mode=dist",
 		"test:browser": "playwright install chromium-headless-shell && vitest run --config .configs/vitest.browser.config.mjs",
 		"test:watch": "vitest --config .configs/vitest.config.mjs",
@@ -107,7 +124,8 @@
 		"lint:fix": "eslint --config .configs/eslint.config.mjs . --fix",
 		"format": "prettier --config .configs/.prettierrc --write .",
 		"format:check": "prettier --config .configs/.prettierrc --check .",
-		"fix:headers": "fix-headers --config .configs/fix-headers.json"
+		"fix:headers": "fix-headers --config .configs/fix-headers.json",
+		"drizzle:generate": "drizzle-kit generate --config tests/drizzle/fixtures/drizzle.config.mjs"
 	},
 	"overrides": {
 		"katex": ">=0.19.1 <1.0.0",
@@ -127,6 +145,8 @@
 		"@types/node": "^26.6.10",
 		"@vitest/browser-playwright": "^5.1.1",
 		"@vitest/coverage-v8": "^5.1.1",
+		"drizzle-kit": "^0.31.11",
+		"drizzle-orm": "^0.45.4",
 		"eslint": "^10.15.0",
 		"globals": "^17.14.0",
 		"playwright": "^1.65.1",

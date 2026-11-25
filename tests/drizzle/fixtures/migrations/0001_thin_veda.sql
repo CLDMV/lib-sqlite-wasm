@@ -1,0 +1,1 @@
+ALTER TABLE `posts` ADD `published` integer DEFAULT false NOT NULL;
