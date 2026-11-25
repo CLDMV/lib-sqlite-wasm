@@ -57,6 +57,22 @@
 			"import": "./dist/index.mjs",
 			"require": "./dist/index.cjs"
 		},
+		"./host": {
+			"sqlite-wasm-dev": {
+				"types": "./src/worker/host.mts",
+				"import": "./src/worker/host.mts"
+			},
+			"types": "./types/src/worker/host.d.mts",
+			"import": "./dist/host.mjs"
+		},
+		"./worker": {
+			"sqlite-wasm-dev": {
+				"types": "./src/worker/client.mts",
+				"import": "./src/worker/client.mts"
+			},
+			"types": "./types/src/worker/client.d.mts",
+			"import": "./dist/worker.mjs"
+		},
 		"./package.json": "./package.json"
 	},
 	"engines": {
