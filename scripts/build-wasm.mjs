@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T01:18:06-08:00 (1795598286)
+ *	@Last modified time: 2026-11-25T02:39:09-08:00 (1795603149)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -142,7 +142,27 @@ export const EXPORTS = [
 	"sqlite3_column_blob",
 	"sqlite3_column_bytes",
 	"sqlite3_serialize",
-	"sqlite3_deserialize"
+	"sqlite3_deserialize",
+	"sqlite3_backup_init",
+	"sqlite3_backup_step",
+	"sqlite3_backup_finish",
+	"sqlite3_backup_remaining",
+	"sqlite3_backup_pagecount",
+	// User functions and collations (cldmv_create_function / cldmv_create_collation are exported from glue.c itself)
+	"sqlite3_aggregate_context",
+	"sqlite3_value_type",
+	"sqlite3_value_int64",
+	"sqlite3_value_double",
+	"sqlite3_value_text",
+	"sqlite3_value_blob",
+	"sqlite3_value_bytes",
+	"sqlite3_result_null",
+	"sqlite3_result_int64",
+	"sqlite3_result_double",
+	"sqlite3_result_text",
+	"sqlite3_result_blob",
+	"sqlite3_result_zeroblob",
+	"sqlite3_result_error"
 ];
 
 /** clang flags shared by compile and link. */

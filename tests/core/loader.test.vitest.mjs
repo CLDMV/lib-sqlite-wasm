@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T01:18:06-08:00 (1795598286)
+ *	@Last modified time: 2026-11-25T02:39:09-08:00 (1795603149)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -16,6 +16,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { checkImports, instantiateSqlite, loadSqliteModule, readWasm, wasmCandidates } from "../../src/core/loader.mts";
+import { CallbackTable, createCallbackImports } from "../../src/core/callbacks.mts";
 import { createVfsImports } from "../../src/core/vfs-imports.mts";
 import { createWasiImports } from "../../src/core/wasi.mts";
 import { MemoryDriver } from "../../src/vfs/memory.mts";
@@ -64,22 +65,21 @@ describe("loader", () => {
 		expect(await first).toBeInstanceOf(WebAssembly.Module);
 	});
 
-	it("imports nothing but the VFS contract and the WASI shims", async () => {
+	it("imports nothing but the VFS contract, the callback trampolines and the WASI shims", async () => {
 		const module = await loadSqliteModule();
 		const imports = WebAssembly.Module.imports(module);
 		expect(imports.every(({ kind }) => kind === "function")).toBe(true);
 		expect(new Set(imports.map(({ module: from }) => from))).toEqual(new Set(["env", "wasi_snapshot_preview1"]));
 		expect(imports.filter(({ module: from }) => from === "wasi_snapshot_preview1").map(({ name }) => name)).toEqual(["random_get"]);
 		const env = imports.filter(({ module: from }) => from === "env").map(({ name }) => name);
-		expect(env.sort()).toEqual(
-			Object.keys(
-				createVfsImports(
-					new MemoryDriver(),
-					() => undefined,
-					() => {}
-				)
-			).sort()
+		const vfs = Object.keys(
+			createVfsImports(
+				new MemoryDriver(),
+				() => undefined,
+				() => {}
+			)
 		);
+		expect(env.sort()).toEqual([...vfs, ...Object.keys(createCallbackImports(new CallbackTable()))].sort());
 	});
 
 	it("rejects modules with imports it does not provide", () => {
@@ -122,6 +122,9 @@ describe("loader", () => {
 		const stmt = memory.view().getUint32(stmtOut, true);
 		expect(exports.sqlite3_step(stmt) & 0xff).toBe(10); // SQLITE_IOERR
 		expect(sqlite.lastVfsError).toBe(failure);
+		expect(sqlite.takeVfsError()).toBe(failure);
+		expect(sqlite.lastVfsError).toBeUndefined();
+		expect(sqlite.takeVfsError()).toBeUndefined();
 		exports.sqlite3_finalize(stmt);
 		exports.sqlite3_close_v2(db);
 	});
