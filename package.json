@@ -109,7 +109,7 @@
 		"sqlite:bump": "node scripts/bump-sqlite.mjs",
 		"prepack": "npm run types:build && npm run build",
 		"prepare": "node -e \"import('./.githooks/install.mjs').catch(()=>{})\"",
-		"types:build": "tsc -p .configs/tsconfig.json --noCheck",
+		"types:build": "tsc -p .configs/tsconfig.json --noCheck && fix-headers --config .configs/fix-headers.json --input types",
 		"types:check": "tsc -p .configs/tsconfig.json --noEmit",
 		"pretest": "npm run build",
 		"test": "node tests/run-vitest.mjs && npm run test:cjs && npm run test:dist",
