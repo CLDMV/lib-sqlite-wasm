@@ -1,13 +1,13 @@
 /**
  *
  *	@Project: @cldmv/sqlite-wasm
- *	@Filename: /tsup.config.mjs
+ *	@Filename: tsup.config.mjs
  *	@Date: 2026-11-25T00:47:21-08:00 (1795596441)
  *	@Author: Nate Corcoran <CLDMV>
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T00:57:11-08:00 (1795597031)
+ *	@Last modified time: 2026-11-25T13:30:18-08:00 (1795642218)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
