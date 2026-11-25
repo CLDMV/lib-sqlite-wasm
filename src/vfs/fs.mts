@@ -33,17 +33,26 @@
  * Where the owner lock lives is the `lock` option `sqlite.open()` passes to `prepare()` (DESIGN.md, "Lock option"):
  *   - "beside" (default): `<db>.lock/`, falling back to "temp" when that folder can't be created (a read-only
  *     database in a folder this process can't write to);
- *   - "temp": `<os.tmpdir()>/cldmv-sqlite-locks/<sha256 of the real path>/`;
+ *   - "temp": `<os.tmpdir()>/cldmv-sqlite-locks-<uid>/<sha256 of the real path>/`, private to the user: the root is
+ *     created with mode 0700 and refused when it is a symlink, isn't a directory, belongs to another user, or is group-
+ *     or world-writable. Every process of one user finds the same root. Where there are no uids (Windows) it is
+ *     `cldmv-sqlite-locks/`, unchecked;
  *   - a folder path: `<folder>/<sha256 of the real path>/`;
  *   - "db": no folder at all; `sqlite.open()` keeps a row in a `_cldmv_lock` table instead (detects, doesn't prevent).
  * The hash is of the file's resolved real path, so two paths to one file (a symlink, `..`) share one lock. A file
  * opened without `prepare()` (the driver used on its own) gets the "beside" lock at open, as before.
+ *
+ * Temporary files SQLite asks for without a name (sorts, temp tables, statement journals) hold database data, so they go
+ * in a folder private to this process: made on first use with `mkdtemp` (mode 0700) under `os.tmpdir()`, files inside it
+ * created exclusively with mode 0600, and the folder removed when the process exits normally.
  */
 import {
 	closeSync,
 	constants,
 	existsSync,
 	fdatasyncSync,
+	lstatSync,
+	mkdtempSync,
 	fstatSync,
 	fsyncSync,
 	ftruncateSync,
@@ -142,8 +151,105 @@ const owners = new Map<string, held>();
 const preparations = new Map<string, prepared>();
 /** SQLite lock levels per file path, then per file id; shared by every driver object in the process. */
 const levels = new Map<string, Map<number, number>>();
-/** Whether the exit handler that releases owner locks is registered. */
+/** Whether the exit handler that releases owner locks and removes the temporary-file folder is registered. */
 let exitHook = false;
+/** This process's private folder for unnamed temporary files, once made. */
+let scratch: string | undefined;
+
+/** Permission bits for what a lock writes: the lock directories and their `owner.json`. */
+interface modes {
+	directory: number;
+	file: number;
+}
+
+/**
+ * Locks beside a database or in a chosen folder: the process umask decides, so other users who share the database can
+ * read the owner record and wait for a live owner instead of failing.
+ */
+const SHARED: modes = { directory: 0o777, file: 0o666 };
+/** Locks under the per-user "temp" root: nobody else needs to read them. */
+const PRIVATE: modes = { directory: 0o700, file: 0o600 };
+
+/** Registers, once per process, the exit handler that releases every owner lock and removes the temporary-file folder. */
+function onExit(): void {
+	if (exitHook) return;
+	exitHook = true;
+	// Best effort: a normal exit releases every lock still held and removes the temporary files. A killed process leaves
+	// a stale lock (taken over later) and its private folder behind.
+	process.on("exit", () => {
+		for (const directory of [...owners.keys()]) release(directory, true);
+		if (scratch !== undefined) rmSync(scratch, { recursive: true, force: true });
+		scratch = undefined;
+	});
+}
+
+/** This process's private folder for temporary files: made on first use (mkdtemp, mode 0700). */
+function scratchFolder(): string {
+	if (scratch === undefined) {
+		scratch = mkdtempSync(join(tmpdir(), "sqlite-wasm-"));
+		onExit();
+	}
+	return scratch;
+}
+
+/**
+ * Opens `path` with the open flags `mode` (no O_CREAT/O_EXCL in it) and says whether this call created the file.
+ * With `create`, the file is created when missing; with `exclusive` as well, an existing file is an error (EEXIST).
+ * Creating is tried first with O_EXCL, so `created` comes from the open itself rather than from a separate check.
+ * Undefined when the file (or its folder) doesn't exist and can't be created.
+ */
+function openFile(
+	path: string,
+	mode: number,
+	create: boolean,
+	exclusive: boolean,
+	permissions: number
+): { fd: number; created: boolean } | undefined {
+	for (;;) {
+		if (create) {
+			try {
+				return { fd: openSync(path, mode | constants.O_CREAT | constants.O_EXCL, permissions), created: true };
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				// A missing folder: nothing can be created there.
+				if (code === "ENOENT") return undefined;
+				if (code !== "EEXIST" || exclusive) throw error;
+			}
+		}
+		try {
+			return { fd: openSync(path, mode), created: false };
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			if (!create) return undefined;
+			// It existed a moment ago and was deleted before we opened it: try creating it again.
+		}
+	}
+}
+
+/**
+ * The root folder of "temp" locks. On POSIX it is per user and must be private: created with mode 0700, and refused
+ * when it is a symlink or not a directory, belongs to another user, or is group- or world-writable (another user could
+ * otherwise pre-create it, or plant a link, and see or steal every lock in it).
+ */
+export function temporaryLocks(): string {
+	const uid = process.getuid?.();
+	// Windows has no uids (process.getuid is missing) and no shared-tmp permission model to check.
+	if (uid === undefined) {
+		const root = join(tmpdir(), "cldmv-sqlite-locks");
+		mkdirSync(root, { recursive: true });
+		return root;
+	}
+	const root = join(tmpdir(), `cldmv-sqlite-locks-${uid}`);
+	mkdirSync(root, { recursive: true, mode: 0o700 });
+	const stats = lstatSync(root);
+	let problem: string | undefined;
+	if (stats.isSymbolicLink()) problem = "is a symbolic link";
+	else if (!stats.isDirectory()) problem = "is not a directory";
+	else if (stats.uid !== uid) problem = `belongs to uid ${stats.uid}, not ${uid}`;
+	else if (stats.mode & 0o022) problem = `is writable by other users (mode ${(stats.mode & 0o777).toString(8)})`;
+	if (problem !== undefined) throw new Error(`refusing the temp lock folder "${root}": it ${problem}`);
+	return root;
+}
 
 /** Blocks the thread for `ms` milliseconds (the driver API is synchronous). */
 function sleep(ms: number): void {
@@ -219,11 +325,11 @@ function remove(directory: string, root: string): void {
  * Tries once to create the lock directory `directory` with `record` as its owner. False when something is already
  * there (or, one level down, when the parent lock has gone away in the meantime).
  */
-function place(directory: string, root: string, record: owner): boolean {
+function place(directory: string, root: string, record: owner, modes: modes): boolean {
 	// Temporary directories sit beside the top-level lock so the rename stays on one filesystem.
 	const temp = unique(root, "tmp");
-	mkdirSync(temp);
-	writeFileSync(join(temp, "owner.json"), JSON.stringify(record));
+	mkdirSync(temp, { mode: modes.directory });
+	writeFileSync(join(temp, "owner.json"), JSON.stringify(record), { mode: modes.file });
 	try {
 		renameSync(temp, directory);
 		return true;
@@ -239,15 +345,15 @@ function place(directory: string, root: string, record: owner): boolean {
 type attempt = "held" | "busy" | "retry";
 
 /** One attempt at the lock directory `directory` (`root` is the top-level lock it belongs to). */
-function claim(directory: string, root: string, record: owner): attempt {
-	if (place(directory, root, record)) return "held";
+function claim(directory: string, root: string, record: owner, modes: modes): attempt {
+	if (place(directory, root, record, modes)) return "held";
 	const found = readOwner(directory);
 	// Released between our attempt and the read.
 	if (found === undefined && !existsSync(directory)) return "retry";
 	if (found !== undefined && alive(found)) return "busy";
 	// A stale lock. Take it over under a nested lock so only one process removes it.
 	const reap = join(directory, "reap");
-	const reaping = claim(reap, root, record);
+	const reaping = claim(reap, root, record, modes);
 	if (reaping !== "held") return reaping;
 	if (same(readOwner(directory), found)) remove(directory, root);
 	// Otherwise a new owner took the place between our read and the claim: leave it alone.
@@ -258,13 +364,7 @@ function claim(directory: string, root: string, record: owner): attempt {
 /** Records a lock directory this process now holds (or one more reference to it). */
 function hold(directory: string, record: owner): void {
 	owners.set(directory, { record, count: 1 });
-	if (!exitHook) {
-		exitHook = true;
-		// Best effort: a normal exit releases every lock still held. A killed process leaves a stale lock instead.
-		process.on("exit", () => {
-			for (const directory of [...owners.keys()]) release(directory, true);
-		});
-	}
+	onExit();
 }
 
 /** A fresh owner record for this process. */
@@ -273,9 +373,9 @@ function self(): owner {
 }
 
 /** One attempt at `directory` until it is either ours or held by a live owner. */
-function settle(directory: string, record: owner): "held" | "busy" {
+function settle(directory: string, record: owner, modes: modes = SHARED): "held" | "busy" {
 	for (;;) {
-		const result = claim(directory, directory, record);
+		const result = claim(directory, directory, record, modes);
 		if (result !== "retry") return result;
 	}
 }
@@ -300,7 +400,7 @@ function acquire(path: string, timeout: number): string | undefined {
 }
 
 /** Like `acquire()`, for any lock directory, waiting without blocking the thread. False on timeout. */
-async function enter(directory: string, timeout: number): Promise<boolean> {
+async function enter(directory: string, timeout: number, modes: modes = SHARED): Promise<boolean> {
 	const existing = owners.get(directory);
 	if (existing) {
 		existing.count++;
@@ -308,7 +408,7 @@ async function enter(directory: string, timeout: number): Promise<boolean> {
 	}
 	const record = self();
 	const deadline = Date.now() + timeout;
-	while (settle(directory, record) === "busy") {
+	while (settle(directory, record, modes) === "busy") {
 		const left = deadline - Date.now();
 		if (left <= 0) return false;
 		await delay(Math.min(POLL_MS, left));
@@ -406,11 +506,6 @@ export class driver implements VfsDriver {
 		let kind = requested;
 		let directory: string | undefined;
 		if (requested !== "db") {
-			const temp = (): string => {
-				const parent = join(tmpdir(), "cldmv-sqlite-locks");
-				mkdirSync(parent, { recursive: true });
-				return hashed(parent, name);
-			};
 			if (requested === "beside") {
 				directory = `${name}.lock`;
 				try {
@@ -422,13 +517,13 @@ export class driver implements VfsDriver {
 				}
 			}
 			if (directory === undefined) {
-				if (kind === "temp") directory = temp();
+				if (kind === "temp") directory = hashed(temporaryLocks(), name);
 				else {
 					const parent = resolve(requested);
 					mkdirSync(parent, { recursive: true });
 					directory = hashed(parent, name);
 				}
-				if (!(await enter(directory, timeout))) throw busy(name, directory);
+				if (!(await enter(directory, timeout, kind === "temp" ? PRIVATE : SHARED))) throw busy(name, directory);
 			}
 		}
 		preparations.set(name, { kind, directory, count: 1 });
@@ -450,21 +545,25 @@ export class driver implements VfsDriver {
 
 	open(name: string | null, fileId: number, flags: number): number {
 		const temporary = name === null;
-		const path = temporary ? join(tmpdir(), `sqlite-wasm-${process.pid}-${fileId}-${randomBytes(6).toString("hex")}`) : resolve(name);
-		let mode = flags & SQLITE_OPEN_READONLY ? constants.O_RDONLY : constants.O_RDWR;
-		if (flags & SQLITE_OPEN_CREATE || temporary) mode |= constants.O_CREAT;
-		if ((flags & SQLITE_OPEN_EXCLUSIVE && flags & SQLITE_OPEN_CREATE) || temporary) mode |= constants.O_EXCL;
-		const existed = existsSync(path);
-		let fd: number;
-		try {
-			fd = openSync(path, mode, 0o644);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return SQLITE_CANTOPEN;
-			throw error;
+		const mode = flags & SQLITE_OPEN_READONLY ? constants.O_RDONLY : constants.O_RDWR;
+		const create = temporary || (flags & SQLITE_OPEN_CREATE) !== 0;
+		const exclusive = temporary || (flags & SQLITE_OPEN_EXCLUSIVE && flags & SQLITE_OPEN_CREATE) !== 0;
+		// Temporary files hold database data: private to the user, in this process's private folder.
+		const permissions = temporary ? 0o600 : 0o644;
+		const base = `${fileId}-${randomBytes(6).toString("hex")}`;
+		let path = temporary ? join(scratchFolder(), base) : resolve(name);
+		let opened = openFile(path, mode, create, exclusive, permissions);
+		if (opened === undefined && temporary) {
+			// The private folder was removed under us (a temp cleaner): make a new one.
+			scratch = undefined;
+			path = join(scratchFolder(), base);
+			opened = openFile(path, mode, create, exclusive, permissions);
 		}
+		if (opened === undefined) return SQLITE_CANTOPEN;
+		const { fd, created } = opened;
 		const entry: handle = { fd, path, deleteOnClose: temporary || (flags & SQLITE_OPEN_DELETEONCLOSE) !== 0 };
 		try {
-			if (!existed && !entry.deleteOnClose) syncDirectory(dirname(path));
+			if (created && !entry.deleteOnClose) syncDirectory(dirname(path));
 			// A prepared database already holds its lock (or, for "db", deliberately none).
 			if (flags & SQLITE_OPEN_MAIN_DB && !preparations.has(path)) {
 				const lock = acquire(path, this.#timeout);

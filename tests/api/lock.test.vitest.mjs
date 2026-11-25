@@ -27,7 +27,8 @@ import { create, hashed, real } from "../../src/vfs/fs.mts";
 import { connection, rejected, sqlite } from "./helpers.mjs";
 
 const CHILD = fileURLToPath(new URL("./lock-child.mjs", import.meta.url));
-const TEMP = join(tmpdir(), "cldmv-sqlite-locks");
+/** The per-user "temp" lock root. */
+const TEMP = join(tmpdir(), `cldmv-sqlite-locks-${process.getuid()}`);
 
 const made = [];
 afterEach(() => {

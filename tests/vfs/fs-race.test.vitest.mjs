@@ -17,19 +17,20 @@
  * The owner lock's race paths: another process changing the lock directory between two of our steps. Two real
  * processes can't hit those windows on demand, so node:fs is wrapped and the other process's step is played in.
  */
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { create } from "../../src/vfs/fs.mts";
 import { cleanup, plantLock, scratch } from "./fs-helpers.mjs";
 
 vi.mock("node:fs", async (importOriginal) => {
 	const real = await importOriginal();
-	return { ...real, renameSync: vi.fn(real.renameSync), readFileSync: vi.fn(real.readFileSync) };
+	return { ...real, renameSync: vi.fn(real.renameSync), readFileSync: vi.fn(real.readFileSync), openSync: vi.fn(real.openSync) };
 });
 
 const READWRITE_CREATE_MAIN = 0x2 | 0x4 | 0x100;
-const OK = 0;
+const READWRITE_CREATE = 0x2 | 0x4;
+const [OK, CANTOPEN] = [0, 14];
 
 let nextId = 3_000_000;
 const id = () => nextId++;
@@ -43,6 +44,7 @@ const real = await vi.importActual("node:fs");
 afterEach(() => {
 	vi.mocked(renameSync).mockReset().mockImplementation(real.renameSync);
 	vi.mocked(readFileSync).mockReset().mockImplementation(real.readFileSync);
+	vi.mocked(openSync).mockReset().mockImplementation(real.openSync);
 	cleanup();
 });
 
@@ -118,5 +120,58 @@ describe("owner lock races", () => {
 				throw failure("EACCES");
 			});
 		expect(() => create({ timeout: 0 }).open(path, id(), READWRITE_CREATE_MAIN)).toThrow(/EACCES/);
+	});
+});
+
+describe("creating files", () => {
+	/** How often the driver opened `directory` to fsync it (only after creating a file in it). */
+	const syncs = (directory) => vi.mocked(openSync).mock.calls.filter(([path, flags]) => path === directory && flags === "r").length;
+
+	it("knows from the open itself whether it created the file", () => {
+		const dir = scratch();
+		const path = join(dir, "f");
+		const driver = create({ timeout: 0 });
+		const first = id();
+		expect(driver.open(path, first, READWRITE_CREATE)).toBe(OK);
+		expect(syncs(dir)).toBe(1);
+		driver.close(first);
+		vi.mocked(openSync).mockClear();
+		// Already there: opened without creating, so the folder needs no fsync.
+		const second = id();
+		expect(driver.open(path, second, READWRITE_CREATE)).toBe(OK);
+		expect(syncs(dir)).toBe(0);
+		driver.close(second);
+	});
+
+	it("creates the file again when it is deleted between finding it and opening it", () => {
+		const dir = scratch();
+		const path = join(dir, "f");
+		writeFileSync(path, "x");
+		vi.mocked(openSync)
+			.mockImplementationOnce(() => {
+				throw failure("EEXIST");
+			})
+			.mockImplementationOnce(() => {
+				real.rmSync(path);
+				throw failure("ENOENT");
+			});
+		const driver = create({ timeout: 0 });
+		const file = id();
+		expect(driver.open(path, file, READWRITE_CREATE)).toBe(OK);
+		expect(syncs(dirname(path))).toBe(1);
+		expect(driver.size(file)).toBe(0);
+		driver.close(file);
+	});
+
+	it("can't open a file in a missing folder", () => {
+		const path = join(scratch(), "missing", "f");
+		expect(create({ timeout: 0 }).open(path, id(), READWRITE_CREATE)).toBe(CANTOPEN);
+	});
+
+	it("reports other errors while creating", () => {
+		vi.mocked(openSync).mockImplementationOnce(() => {
+			throw failure("EACCES");
+		});
+		expect(() => create({ timeout: 0 }).open(join(scratch(), "f"), id(), READWRITE_CREATE)).toThrow(/EACCES/);
 	});
 });

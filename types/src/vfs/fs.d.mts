@@ -25,6 +25,12 @@ export interface preparation {
     /** "beside" (default), "temp", "db" or a folder path. */
     lock?: string;
 }
+/**
+ * The root folder of "temp" locks. On POSIX it is per user and must be private: created with mode 0700, and refused
+ * when it is a symlink or not a directory, belongs to another user, or is group- or world-writable (another user could
+ * otherwise pre-create it, or plant a link, and see or steal every lock in it).
+ */
+export declare function temporaryLocks(): string;
 /** The resolved real path of a database file, or of its folder plus its name when the file doesn't exist yet. */
 export declare function real(path: string): string;
 /** The lock folder for `path` under `parent`: named by the SHA-256 of the file's real path. */
