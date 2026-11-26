@@ -25,6 +25,17 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export default defineConfig({
 	root,
+	// Pre-bundle the drizzle modules the drizzle tests import. Left to discovery, Vite finds them mid-run, reloads the
+	// page and the test file fails to import on a cold cache.
+	optimizeDeps: {
+		include: [
+			"drizzle-orm/better-sqlite3/session",
+			"drizzle-orm/logger",
+			"drizzle-orm/relations",
+			"drizzle-orm/sqlite-core",
+			"drizzle-orm/sqlite-proxy"
+		]
+	},
 	test: {
 		include: ["tests/browser/**/*.browser.vitest.mjs"],
 		testTimeout: 30000,
