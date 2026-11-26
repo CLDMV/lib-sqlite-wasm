@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:16-08:00 (1795642216)
+ *	@Last modified time: 2026-11-25T19:16:36-08:00 (1795662996)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -32,9 +32,9 @@ describe("browser loader", () => {
 		expect(loader.candidates).toBe(candidates);
 	});
 
-	it("lists the bundle-relative file first, then dist/ from a checkout", () => {
+	it("lists dist/sqlite3.wasm from dist/core/ first, then from src/core/ in a checkout", () => {
 		const [bundled, checkout] = candidates();
-		expect(bundled.pathname).toMatch(/\/src\/core\/sqlite3\.wasm$/);
+		expect(bundled.pathname).toMatch(/\/src\/sqlite3\.wasm$/);
 		expect(checkout.pathname).toMatch(/\/dist\/sqlite3\.wasm$/);
 	});
 
@@ -91,7 +91,7 @@ describe("browser loader", () => {
 		await expect(load(undefined, missing)).rejects.toThrow(/sqlite3\.wasm not found/);
 		expect(missing).toHaveBeenCalledTimes(2);
 
-		const get = vi.fn(async (url) => (url.pathname.includes("/src/core/") ? new Response("", { status: 404 }) : wasm()));
+		const get = vi.fn(async (url) => (url.pathname.endsWith("/src/sqlite3.wasm") ? new Response("", { status: 404 }) : wasm()));
 		const first = await load(undefined, get);
 		isModule(first);
 		expect(get).toHaveBeenCalledTimes(2);
