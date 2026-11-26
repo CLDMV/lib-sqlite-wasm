@@ -59,7 +59,7 @@ The source archive is used instead of the published amalgamation because of `SQL
 
 Downloads and unpacked toolchains live in `SQLITE_WASM_TOOLCHAIN_DIR` (default `.cache/toolchains/`, gitignored). The linked module is cached under `.cache/build/`, keyed by a hash of the pins, `glue.c`, the defines, the generator flags, the export list and the compiler, linker and `wasm-opt` flags, so a rebuild in the same checkout only copies it back. No shell is used: every tool runs through `spawnSync` with an argument array.
 
-The wasm is built in CI from source on every build; nothing binary is committed. `npm run build` runs tsup and then `build:wasm`, in that order, because the tsup config clears `dist/` first. `npm run sqlite:bump` (`scripts/bump-sqlite.mjs`) moves the SQLite pin, and `--toolchain` moves the wasi-sdk and binaryen pins.
+The wasm is built in CI from source on every build; nothing binary is committed. `npm run build` runs `scripts/build-js.mjs` and then `build:wasm`, in that order, because the JS build clears `dist/` first. `npm run sqlite:bump` (`scripts/bump-sqlite.mjs`) moves the SQLite pin, and `--toolchain` moves the wasi-sdk and binaryen pins.
 
 ### C glue
 
@@ -242,7 +242,7 @@ src/drizzle.mts, src/drizzle.cjs
 scripts/build-wasm.mjs        source archive, toolchains, compile, wasm-opt
 scripts/bump-sqlite.mjs       moves the pins in sqlite.version.json
 sqlite.version.json           SQLite version, URL, size, SHA3-256; wasi-sdk and binaryen per-host assets and SHA-256
-dist/                         build output: entries, shared chunks, CJS wrappers, sqlite3.wasm
+dist/                         build output: one .mjs per src/ module, CJS wrappers, sqlite3.wasm
 types/                        generated declarations
 ```
 
@@ -257,11 +257,11 @@ Exports:
 
 Each export has a `sqlite-wasm-dev` condition with `types` and `import` pointing at its `.mts` source, so a checkout runs from `src/` with `--conditions=sqlite-wasm-dev`. `require` always resolves to `dist/`, so the CommonJS tests build first.
 
-**TypeScript.** Sources are `src/**/*.mts`, on TypeScript 6 with `strict`, `module`/`moduleResolution` `NodeNext`, imports written with `.mts` extensions and `rewriteRelativeImportExtensions`, and `erasableSyntaxOnly`, so Node's own type stripping can run `src/` directly (no enums, namespaces or parameter properties). tsup compiles `dist/`; `tsc` checks types (`types:check`) and emits declarations into `types/` (`types:build`). `types/` is generated at build and pack time rather than committed. The C glue stays C.
+**TypeScript.** Sources are `src/**/*.mts`, on TypeScript 6 with `strict`, `module`/`moduleResolution` `NodeNext`, imports written with `.mts` extensions and `rewriteRelativeImportExtensions`, and `erasableSyntaxOnly`, so Node's own type stripping can run `src/` directly (no enums, namespaces or parameter properties). `tsc` compiles `dist/` (`scripts/build-js.mjs`), checks types (`types:check`) and emits declarations into `types/` (`types:build`). `types/` is generated at build and pack time rather than committed. The C glue stays C.
 
-**One build with shared chunks.** tsup builds all four entries in one ESM build with code splitting, so every module (the error class, the protocol, values, the loader) exists once and `instanceof` works across entries: `client.error === sqlite.error`. The output is minified with `keepNames` (stack traces and `fn.name` stay readable) and keeps `node:` specifiers.
+**One file per module, no bundling.** `dist/` mirrors `src/`: `tsc` compiles each `.mts` to a `.mjs` at the same path (rewriting the import extensions), and esbuild then minifies each file in place with `keepNames` (stack traces and `fn.name` stay readable), with source maps back to `src/`. Nothing is bundled, so every module (the error class, the protocol, values, the loader) exists once and the four entries share it by plain relative imports: `instanceof` works across entries (`client.error === sqlite.error`). Bundling the entries separately would give each its own copy of the shared code and break that; bundling them together needs code splitting, which leaves hashed `chunk-*.mjs` files nobody can read. Apps that bundle handle the per-module files as usual.
 
-**No `node:` imports in shared code.** The browser entries share chunks with the Node entry, so they can't get stubs of their own, and a `node:` import anywhere in the shared code would land in their graph. Node-only code (reading the wasm from disk, the `fs` driver, the `"db"` lock's process checks) sits behind `src/core/platform.mts`, which `src/node.mts` fills in. Only the main entry imports `src/node.mts`, and it passes the capabilities as an export rather than through an import side effect, because the package declares `"sideEffects": false`. `tests/bundle/browser.test.vitest.mjs` checks that the browser entries' chunk graph reaches no Node import.
+**No `node:` imports in shared code.** The browser entries share modules with the Node entry, so they can't get stubs of their own, and a `node:` import anywhere in the shared code would land in their graph. Node-only code (reading the wasm from disk, the `fs` driver, the `"db"` lock's process checks) sits behind `src/core/platform.mts`, which `src/node.mts` fills in. Only the main entry imports `src/node.mts`, and it passes the capabilities as an export rather than through an import side effect, because the package declares `"sideEffects": false`. `tests/bundle/browser.test.vitest.mjs` checks that the browser entries' import graph reaches no Node import, and that `dist/` has exactly one `.mjs` per source module.
 
 **CommonJS.** `src/index.cjs` and `src/drizzle.cjs` are hand-written wrappers, `module.exports = require("./index.mjs")`, copied verbatim into `dist/`, never a second bundle. They rely on Node's synchronous `require(esm)` and refuse with a clear message where it is missing. Because of that, no module in the ESM graph may use top-level `await`: nothing runs at import time, and the wasm is compiled on the first `sqlite.open()` and cached.
 
@@ -276,7 +276,7 @@ Tests run through `@cldmv/vitest-runner` (`npm test`, `npm run coverage`), which
 - **OPFS, worker and multi-tab logic in Node:** against an OPFS fake and a fake of several tabs of one origin (`tests/fakes/`), each with its own Web Locks client, BroadcastChannels and workers, and a `kill()` that behaves like a closed tab. This is what lets the handover rules reach 100% coverage.
 - **Browser:** vitest browser mode with Playwright on headless Chromium (`npm run test:browser`, a separate CI job): real OPFS, the worker client, Drizzle through the client, and multi-tab sharing with same-origin iframes as tabs, including closing the leader mid-stream and ending the leader's worker while its tab stays open.
 - **Drizzle:** one set of scenarios (schema, migrations, queries, transactions, update and delete with `orderBy` and `limit`) run on the synchronous database, through the worker client, and on a follower tab of a shared connection.
-- **Package:** the browser entries' chunk graph, shared module identity across entries, and the packed file list.
+- **Package:** the `dist/` layout, the browser entries' import graph, shared module identity across entries, and the packed file list.
 
 ## Key decisions
 
@@ -289,5 +289,5 @@ Tests run through `@cldmv/vitest-runner` (`npm test`, `npm run coverage`), which
 - **OPFS handles opened before SQLite needs them,** instead of a pool of anonymous handles, which keeps real file names in OPFS and needs no COOP/COEP headers.
 - **An owner lock outside the file in Node,** because Node has no `fcntl` locks, with a choice of where it lives for read-only folders, shared folders and folder-less setups.
 - **`better-sqlite3` behaviour with slothlet-style names.** Familiar semantics and Drizzle's own session without a custom layer, under one-word names with namespaces.
-- **One error class for everything SQLite reports,** shared by every entry through one chunked build.
+- **One error class for everything SQLite reports,** shared by every entry because each module is built once.
 - **ESM first with thin CommonJS wrappers,** and no top-level `await` anywhere, so `require()` works without a second bundle.

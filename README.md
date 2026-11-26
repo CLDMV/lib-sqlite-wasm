@@ -537,7 +537,7 @@ All connections in a process share one module instance, which is what lets `ATTA
 
 ## Development
 
-The source is TypeScript (`src/**/*.mts`) and the package ships built `dist/`. The wasm is built from source by `npm run build` (tsup, then `scripts/build-wasm.mjs`), which downloads pinned versions of SQLite's source archive, wasi-sdk and binaryen into `.cache/toolchains/` (override with `SQLITE_WASM_TOOLCHAIN_DIR`). The pins and hashes are in `sqlite.version.json`, and `npm run sqlite:bump` updates the SQLite pin. Generating the amalgamation needs `make` and a C compiler (`cc`, or `$CC`) on the build machine, which Linux and macOS have; nothing else, since the archive carries its own Tcl interpreter. The built `dist/sqlite3.wasm` is what gets published, so consumers need none of this.
+The source is TypeScript (`src/**/*.mts`) and the package ships built `dist/`. The wasm is built from source by `npm run build` (`scripts/build-js.mjs`, then `scripts/build-wasm.mjs`), which downloads pinned versions of SQLite's source archive, wasi-sdk and binaryen into `.cache/toolchains/` (override with `SQLITE_WASM_TOOLCHAIN_DIR`). The pins and hashes are in `sqlite.version.json`, and `npm run sqlite:bump` updates the SQLite pin. Generating the amalgamation needs `make` and a C compiler (`cc`, or `$CC`) on the build machine, which Linux and macOS have; nothing else, since the archive carries its own Tcl interpreter. The built `dist/sqlite3.wasm` is what gets published, so consumers need none of this.
 
 To run from `src/` without building, resolve the `sqlite-wasm-dev` export condition, which points every entry at its `.mts` source:
 

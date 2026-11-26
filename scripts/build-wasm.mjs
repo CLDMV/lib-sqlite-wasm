@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:11-08:00 (1795642211)
+ *	@Last modified time: 2026-11-25T19:16:33-08:00 (1795662993)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -36,7 +36,7 @@
  *
  * Downloads and tool trees live in SQLITE_WASM_TOOLCHAIN_DIR (default .cache/toolchains/). The linked module is also
  * cached under .cache/build/, keyed by everything that goes into it, so a second `npm run build` in the same checkout
- * only copies it back into dist/ (tsup cleans dist/ first).
+ * only copies it back into dist/ (scripts/build-js.mjs clears dist/ first).
  *
  * No shell is used: every tool runs through spawnSync with an argument array. `tar` must be on PATH (it is on Linux,
  * macOS and the CI runner image); the zip is read with node:zlib.
