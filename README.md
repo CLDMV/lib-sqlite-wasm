@@ -53,7 +53,7 @@ Drizzle support is optional. Install `drizzle-orm` (`^0.45.0`) next to it if you
 | `@cldmv/sqlite-wasm`         | `sqlite.open()` and `sqlite.error`. ESM and CommonJS (`require()` needs Node.js `^20.19.0` or `>=22.13.0`). Works in Node and inside a browser worker. |
 | `@cldmv/sqlite-wasm/host`    | Worker side of the main-thread client: `host.listen(self)`. ESM only.                                                                                  |
 | `@cldmv/sqlite-wasm/worker`  | Main-thread client: `client.connect(workerUrl, path, options)`. ESM only.                                                                              |
-| `@cldmv/sqlite-wasm/drizzle` | `drizzle()` and `migrate()`. ESM and CommonJS.                                                                                                         |
+| `@cldmv/sqlite-wasm/drizzle` | `drizzle()`, `migrate()` and the `bytes()` column. ESM and CommonJS.                                                                                   |
 
 Nothing runs at import time. The wasm module is compiled and instantiated by the first `sqlite.open()`.
 
@@ -473,9 +473,25 @@ await migrate(db, { journal, migrations: { m0000 } }); // worker client
 
 Migrations are keyed `m0000`, `m0001`, and so on, matching the journal's `idx`. They run in one transaction.
 
-### Browser caveat: `blob` columns need a `Buffer`
+### Binary columns: `bytes()`
 
-Drizzle's `blob` column types call the global `Buffer`: always in `buffer` mode, and when writing in `json` and `bigint` modes. Browsers do not have `Buffer` and Drizzle does not provide it. An app that uses those columns in a browser adds the [`buffer`](https://www.npmjs.com/package/buffer) package and installs it as a global before any query runs:
+`bytes()` is a blob column whose value is a plain `Uint8Array`. It never uses `Buffer`, so it works in browsers with no polyfill, and the same schema works in Node:
+
+```js
+import { bytes } from "@cldmv/sqlite-wasm/drizzle";
+import { integer, sqliteTable } from "drizzle-orm/sqlite-core";
+
+export const files = sqliteTable("files", {
+	id: integer("id").primaryKey(),
+	data: bytes("data").notNull()
+});
+```
+
+It stores a `blob`, so drizzle-kit generates the same column as `blob("data")` would.
+
+### Browser caveat: Drizzle's `blob()` needs a `Buffer`
+
+Prefer `bytes()` for binary data. Drizzle's own `blob` column types call the global `Buffer`: always in `buffer` mode, and when writing in `json` and `bigint` modes. Browsers do not have `Buffer` and Drizzle does not provide it. An app that uses those columns in a browser adds the [`buffer`](https://www.npmjs.com/package/buffer) package and installs it as a global before any query runs:
 
 ```js
 import { Buffer } from "buffer";

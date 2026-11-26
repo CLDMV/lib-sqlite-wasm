@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:13-08:00 (1795642213)
+ *	@Last modified time: 2026-11-25T18:22:16-08:00 (1795659736)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -33,11 +33,20 @@
  * is (it reads a folder, so Node and workers with a file system only). `migrate()` here takes migrations that were
  * bundled as data (`{ journal, migrations }`, the shape drizzle-kit writes for its bundled drivers) and works for both
  * kinds of database, so it also serves the browser.
+ *
+ * `bytes()` is a blob column that holds a plain `Uint8Array`. Drizzle's own `blob()` modes go through Node's `Buffer`,
+ * which browsers don't have; `bytes()` never touches it.
  */
 import { BetterSQLiteSession } from "drizzle-orm/better-sqlite3/session";
 import { DefaultLogger, type Logger } from "drizzle-orm/logger";
 import { createTableRelationsHelpers, extractTablesRelationalConfig, type TablesRelationalConfig } from "drizzle-orm/relations";
-import { BaseSQLiteDatabase, SQLiteAsyncDialect, SQLiteSyncDialect, type SQLiteTransactionConfig } from "drizzle-orm/sqlite-core";
+import {
+	BaseSQLiteDatabase,
+	customType,
+	SQLiteAsyncDialect,
+	SQLiteSyncDialect,
+	type SQLiteTransactionConfig
+} from "drizzle-orm/sqlite-core";
 import { SQLiteProxyTransaction, SQLiteRemoteSession, SqliteRemoteDatabase } from "drizzle-orm/sqlite-proxy";
 import type { database } from "./api/database.mts";
 import type { database as client } from "./worker/client.mts";
@@ -73,6 +82,17 @@ export interface migrations {
 	journal: { entries: { idx: number; when: number; tag: string; breakpoints: boolean }[] };
 	migrations: Record<string, string>;
 }
+
+/**
+ * A blob column whose value is a `Uint8Array`, with no `Buffer` involved, so it works in browsers without a polyfill.
+ *
+ *     import { bytes } from "@cldmv/sqlite-wasm/drizzle";
+ *     const files = sqliteTable("files", { id: integer("id").primaryKey(), data: bytes("data").notNull() });
+ */
+export const bytes = customType<{ data: Uint8Array; driverData: Uint8Array }>({
+	// Blobs already come back from the database (and through the worker client) as Uint8Array, so values pass through.
+	dataType: () => "blob"
+});
 
 /** Drizzle's internal pieces that the public types leave out. */
 interface internals {
