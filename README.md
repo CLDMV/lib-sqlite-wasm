@@ -11,6 +11,10 @@ The module is built from SQLite's own source archive with wasi-sdk, with no Emsc
 - Optional [Drizzle ORM](https://orm.drizzle.team) driver, sync and async
 - Several browser tabs can share one database
 
+[![npm version]][npm_version_url] [![npm downloads]][npm_downloads_url] [![GitHub downloads]][github_downloads_url] [![Last commit]][last_commit_url] [![npm last update]][npm_last_update_url] [![coverage]][coverage_url]
+
+[![Contributors]][contributors_url] [![Sponsor shinrai]][sponsor_url]
+
 ## ✨ What's New
 
 ### Latest: v0.1.0 (November 2026)
@@ -525,6 +529,41 @@ node --conditions=sqlite-wasm-dev app.mts
 
 Useful scripts: `npm run build`, `npm test` (Node tests, the CommonJS tests and the same tests against `dist/`), `npm run test:browser` (Chromium), `npm run coverage`, `npm run lint`, `npm run format`, `npm run types:check`.
 
+[![CodeFactor]][codefactor_url] [![OpenSSF Scorecard]][ossf_scorecard_url] [![npms.io score]][npms_url] [![npm unpacked size]][npm_size_url] [![Repo size]][repo_size_url]
+
 ## License
 
-[Apache-2.0](LICENSE)
+[![GitHub license]][github_license_url] [![npm license]][npm_license_url]
+
+[Apache-2.0](LICENSE) © Shinrai / CLDMV
+
+[npm version]: https://img.shields.io/npm/v/%40cldmv%2Fsqlite-wasm.svg?style=for-the-badge&logo=npm&logoColor=white&labelColor=CB3837
+[npm_version_url]: https://www.npmjs.com/package/@cldmv/sqlite-wasm
+[last commit]: https://img.shields.io/github/last-commit/CLDMV/lib-sqlite-wasm?style=for-the-badge&logo=github&logoColor=white&labelColor=181717
+[last_commit_url]: https://github.com/CLDMV/lib-sqlite-wasm/commits
+[npm last update]: https://img.shields.io/npm/last-update/%40cldmv%2Fsqlite-wasm?style=for-the-badge&logo=npm&logoColor=white&labelColor=CB3837
+[npm_last_update_url]: https://www.npmjs.com/package/@cldmv/sqlite-wasm
+[codefactor]: https://img.shields.io/codefactor/grade/github/CLDMV/lib-sqlite-wasm?style=for-the-badge&logo=codefactor&logoColor=white&labelColor=F44A6A
+[codefactor_url]: https://www.codefactor.io/repository/github/cldmv/lib-sqlite-wasm
+[openssf scorecard]: https://img.shields.io/ossf-scorecard/github.com/CLDMV/lib-sqlite-wasm?style=for-the-badge&label=OpenSSF%20Scorecard
+[ossf_scorecard_url]: https://scorecard.dev/viewer/?uri=github.com/CLDMV/lib-sqlite-wasm
+[npms.io score]: https://img.shields.io/npms-io/final-score/%40cldmv%2Fsqlite-wasm?style=for-the-badge&logo=npms&logoColor=white&labelColor=0B5D57
+[npms_url]: https://npms.io/search?q=%40cldmv%2Fsqlite-wasm
+[npm downloads]: https://img.shields.io/npm/dm/%40cldmv%2Fsqlite-wasm.svg?style=for-the-badge&logo=npm&logoColor=white&labelColor=CB3837
+[npm_downloads_url]: https://www.npmjs.com/package/@cldmv/sqlite-wasm
+[github downloads]: https://img.shields.io/github/downloads/CLDMV/lib-sqlite-wasm/total?style=for-the-badge&logo=github&logoColor=white&labelColor=181717
+[github_downloads_url]: https://github.com/CLDMV/lib-sqlite-wasm/releases
+[npm unpacked size]: https://img.shields.io/npm/unpacked-size/%40cldmv%2Fsqlite-wasm.svg?style=for-the-badge&logo=npm&logoColor=white&labelColor=CB3837
+[npm_size_url]: https://www.npmjs.com/package/@cldmv/sqlite-wasm
+[repo size]: https://img.shields.io/github/repo-size/CLDMV/lib-sqlite-wasm?style=for-the-badge&logo=github&logoColor=white&labelColor=181717
+[repo_size_url]: https://github.com/CLDMV/lib-sqlite-wasm
+[github license]: https://img.shields.io/github/license/CLDMV/lib-sqlite-wasm.svg?style=for-the-badge&logo=github&logoColor=white&labelColor=181717
+[github_license_url]: https://github.com/CLDMV/lib-sqlite-wasm/blob/HEAD/LICENSE
+[npm license]: https://img.shields.io/npm/l/%40cldmv%2Fsqlite-wasm.svg?style=for-the-badge&logo=npm&logoColor=white&labelColor=CB3837
+[npm_license_url]: https://www.npmjs.com/package/@cldmv/sqlite-wasm
+[coverage]: https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FCLDMV%2Flib-sqlite-wasm%2Fbadges%2Fcoverage.json&style=for-the-badge&logo=vitest&logoColor=white
+[coverage_url]: https://github.com/CLDMV/lib-sqlite-wasm/blob/badges/coverage.json
+[contributors]: https://img.shields.io/github/contributors/CLDMV/lib-sqlite-wasm.svg?style=for-the-badge&logo=github&logoColor=white&labelColor=181717
+[contributors_url]: https://github.com/CLDMV/lib-sqlite-wasm/graphs/contributors
+[sponsor shinrai]: https://img.shields.io/github/sponsors/shinrai?style=for-the-badge&logo=githubsponsors&logoColor=white&labelColor=EA4AAA&label=Sponsor
+[sponsor_url]: https://github.com/sponsors/shinrai
