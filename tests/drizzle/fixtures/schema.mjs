@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:16-08:00 (1795642216)
+ *	@Last modified time: 2026-11-25T18:22:17-08:00 (1795659737)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -18,6 +18,7 @@
  * in ./migrations; commit both together.
  */
 import { relations } from "drizzle-orm";
+import { bytes } from "../../../src/drizzle.mts";
 import { blob, index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable(
@@ -31,7 +32,8 @@ export const users = sqliteTable(
 		joined: integer("joined", { mode: "timestamp_ms" }),
 		settings: text("settings", { mode: "json" }).$type(),
 		counter: blob("counter", { mode: "bigint" }),
-		avatar: blob("avatar", { mode: "buffer" })
+		avatar: blob("avatar", { mode: "buffer" }),
+		thumb: bytes("thumb")
 	},
 	(table) => [index("users_name_idx").on(table.name)]
 );

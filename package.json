@@ -1,6 +1,6 @@
 {
 	"name": "@cldmv/sqlite-wasm",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "SQLite compiled to WebAssembly for Node.js and browsers, with file storage on disk and in OPFS",
 	"type": "module",
 	"license": "Apache-2.0",
@@ -42,10 +42,31 @@
 	"homepage": "https://github.com/CLDMV/lib-sqlite-wasm#readme",
 	"keywords": [
 		"sqlite",
+		"sqlite3",
+		"sqlite-wasm",
 		"wasm",
 		"webassembly",
+		"wasi",
+		"database",
+		"sql",
+		"embedded-database",
+		"browser",
+		"nodejs",
 		"opfs",
-		"drizzle"
+		"origin-private-file-system",
+		"web-worker",
+		"worker",
+		"multi-tab",
+		"local-first",
+		"offline-first",
+		"wal",
+		"fts5",
+		"full-text-search",
+		"rtree",
+		"json",
+		"drizzle",
+		"drizzle-orm",
+		"orm"
 	],
 	"exports": {
 		".": {

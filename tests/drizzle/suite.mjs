@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:17-08:00 (1795642217)
+ *	@Last modified time: 2026-11-25T18:22:17-08:00 (1795659737)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -101,6 +101,28 @@ export function defineSuite({ name, sync, open, migrate, extra }) {
 			expect([...row.avatar]).toEqual([1, 2, 3, 250]);
 			const stored = await db.select().from(users).where(eq(users.id, 1)).get();
 			expect(stored).toEqual(row);
+		});
+
+		it("stores bytes() columns as plain Uint8Array, with no Buffer involved", async () => {
+			const thumb = new Uint8Array([0, 1, 127, 128, 255]);
+			await db.insert(users).values({ name: "ada", email: "ada@example.com", thumb }).run();
+			await db.insert(users).values({ name: "bob", email: "bob@example.com" }).run();
+			const rows = await db.select({ thumb: users.thumb }).from(users).orderBy(asc(users.id)).all();
+			expect(rows[0].thumb).toBeInstanceOf(Uint8Array);
+			expect([...rows[0].thumb]).toEqual([0, 1, 127, 128, 255]);
+			expect(rows[1].thumb).toBeNull();
+			const empty = new Uint8Array(0);
+			await db.update(users).set({ thumb: empty }).where(eq(users.id, 2)).run();
+			const updated = await db.select({ thumb: users.thumb }).from(users).where(eq(users.id, 2)).get();
+			expect(updated.thumb).toBeInstanceOf(Uint8Array);
+			expect(updated.thumb.length).toBe(0);
+			expect(
+				await db
+					.select({ n: sql`typeof(thumb)` })
+					.from(users)
+					.orderBy(asc(users.id))
+					.all()
+			).toEqual([{ n: "blob" }, { n: "blob" }]);
 		});
 
 		it("returns the changes and the rowid from run()", async () => {
@@ -275,9 +297,9 @@ export function defineSuite({ name, sync, open, migrate, extra }) {
 
 		it("applies migrations once and records them", async () => {
 			const recorded = await db.values(sql`select count(*) from __drizzle_migrations`);
-			expect(recorded).toEqual([[2]]);
+			expect(recorded).toEqual([[3]]);
 			await migrate(db);
-			expect(await db.values(sql`select count(*) from __drizzle_migrations`)).toEqual([[2]]);
+			expect(await db.values(sql`select count(*) from __drizzle_migrations`)).toEqual([[3]]);
 			const tables = await db.values(sql`select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' order by name`);
 			expect(tables).toEqual([["__drizzle_migrations"], ["posts"], ["users"]]);
 			const index = await db.values(sql`select name from sqlite_schema where type = 'index' and name = 'users_name_idx'`);

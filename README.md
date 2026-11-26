@@ -17,10 +17,14 @@ The module is built from SQLite's own source archive with wasi-sdk, with no Emsc
 
 ## ✨ What's New
 
-### Latest: v0.1.0 (November 2026)
+### Latest: v0.2.0 (November 2026)
 
-- **First release** — SQLite 3.54.1 compiled to WebAssembly from SQLite's own source archive, with one synchronous API for Node.js (real files, owner lock between processes) and browser workers (OPFS, Web Locks), plus an async client for the browser main thread. WAL by default, standard on-disk files, an optional Drizzle ORM driver, and several browser tabs sharing one database with automatic handover.
-- [View full v0.1.0 Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.1.0.md)
+- **`bytes()` for Drizzle** — a blob column that holds a plain `Uint8Array` and never touches `Buffer`, so browser apps can store binary data through Drizzle without a polyfill. Existing `blob` columns can switch to it with no migration. The release also adds a [design document](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/DESIGN.md).
+- [View full v0.2.0 Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.2.0.md)
+
+### Recent Releases
+
+- **v0.1.0** (November 2026) — First release: SQLite 3.54.1 in WebAssembly for Node.js and browsers, with OPFS, multi-tab sharing and a Drizzle driver ([Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.1.0.md))
 
 ## Contents
 
@@ -53,7 +57,7 @@ Drizzle support is optional. Install `drizzle-orm` (`^0.45.0`) next to it if you
 | `@cldmv/sqlite-wasm`         | `sqlite.open()` and `sqlite.error`. ESM and CommonJS (`require()` needs Node.js `^20.19.0` or `>=22.13.0`). Works in Node and inside a browser worker. |
 | `@cldmv/sqlite-wasm/host`    | Worker side of the main-thread client: `host.listen(self)`. ESM only.                                                                                  |
 | `@cldmv/sqlite-wasm/worker`  | Main-thread client: `client.connect(workerUrl, path, options)`. ESM only.                                                                              |
-| `@cldmv/sqlite-wasm/drizzle` | `drizzle()` and `migrate()`. ESM and CommonJS.                                                                                                         |
+| `@cldmv/sqlite-wasm/drizzle` | `drizzle()`, `migrate()` and the `bytes()` column. ESM and CommonJS.                                                                                   |
 
 Nothing runs at import time. The wasm module is compiled and instantiated by the first `sqlite.open()`.
 
@@ -473,9 +477,25 @@ await migrate(db, { journal, migrations: { m0000 } }); // worker client
 
 Migrations are keyed `m0000`, `m0001`, and so on, matching the journal's `idx`. They run in one transaction.
 
-### Browser caveat: `blob` columns need a `Buffer`
+### Binary columns: `bytes()`
 
-Drizzle's `blob` column types call the global `Buffer`: always in `buffer` mode, and when writing in `json` and `bigint` modes. Browsers do not have `Buffer` and Drizzle does not provide it. An app that uses those columns in a browser adds the [`buffer`](https://www.npmjs.com/package/buffer) package and installs it as a global before any query runs:
+`bytes()` is a blob column whose value is a plain `Uint8Array`. It never uses `Buffer`, so it works in browsers with no polyfill, and the same schema works in Node:
+
+```js
+import { bytes } from "@cldmv/sqlite-wasm/drizzle";
+import { integer, sqliteTable } from "drizzle-orm/sqlite-core";
+
+export const files = sqliteTable("files", {
+	id: integer("id").primaryKey(),
+	data: bytes("data").notNull()
+});
+```
+
+It stores a `blob`, so drizzle-kit generates the same column as `blob("data")` would.
+
+### Browser caveat: Drizzle's `blob()` needs a `Buffer`
+
+Prefer `bytes()` for binary data. Drizzle's own `blob` column types call the global `Buffer`: always in `buffer` mode, and when writing in `json` and `bigint` modes. Browsers do not have `Buffer` and Drizzle does not provide it. An app that uses those columns in a browser adds the [`buffer`](https://www.npmjs.com/package/buffer) package and installs it as a global before any query runs:
 
 ```js
 import { Buffer } from "buffer";

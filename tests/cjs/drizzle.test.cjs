@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:16-08:00 (1795642216)
+ *	@Last modified time: 2026-11-25T18:22:17-08:00 (1795659737)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -24,7 +24,7 @@ const dist = path.resolve(__dirname, "..", "..", "dist");
 // Run after `npm run build`: the built CommonJS entry of ./drizzle re-exports the built ESM entry.
 test("dist/drizzle.cjs re-exports dist/drizzle.mjs", () => {
 	const cjs = require(path.join(dist, "drizzle.cjs"));
-	assert.deepEqual(Object.keys(cjs).sort(), ["drizzle", "migrate"]);
+	assert.deepEqual(Object.keys(cjs).sort(), ["bytes", "drizzle", "migrate"]);
 });
 
 test("dist/drizzle.cjs drives a database opened through dist/index.cjs", async () => {
