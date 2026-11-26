@@ -42,10 +42,31 @@
 	"homepage": "https://github.com/CLDMV/lib-sqlite-wasm#readme",
 	"keywords": [
 		"sqlite",
+		"sqlite3",
+		"sqlite-wasm",
 		"wasm",
 		"webassembly",
+		"wasi",
+		"database",
+		"sql",
+		"embedded-database",
+		"browser",
+		"nodejs",
 		"opfs",
-		"drizzle"
+		"origin-private-file-system",
+		"web-worker",
+		"worker",
+		"multi-tab",
+		"local-first",
+		"offline-first",
+		"wal",
+		"fts5",
+		"full-text-search",
+		"rtree",
+		"json",
+		"drizzle",
+		"drizzle-orm",
+		"orm"
 	],
 	"exports": {
 		".": {
