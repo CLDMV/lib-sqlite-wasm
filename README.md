@@ -17,10 +17,14 @@ The module is built from SQLite's own source archive with wasi-sdk, with no Emsc
 
 ## ✨ What's New
 
-### Latest: v0.1.0 (November 2026)
+### Latest: v0.2.0 (November 2026)
 
-- **First release** — SQLite 3.54.1 compiled to WebAssembly from SQLite's own source archive, with one synchronous API for Node.js (real files, owner lock between processes) and browser workers (OPFS, Web Locks), plus an async client for the browser main thread. WAL by default, standard on-disk files, an optional Drizzle ORM driver, and several browser tabs sharing one database with automatic handover.
-- [View full v0.1.0 Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.1.0.md)
+- **`bytes()` for Drizzle** — a blob column that holds a plain `Uint8Array` and never touches `Buffer`, so browser apps can store binary data through Drizzle without a polyfill. Existing `blob` columns can switch to it with no migration. The release also adds a [design document](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/DESIGN.md).
+- [View full v0.2.0 Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.2.0.md)
+
+### Recent Releases
+
+- **v0.1.0** (November 2026) — First release: SQLite 3.54.1 in WebAssembly for Node.js and browsers, with OPFS, multi-tab sharing and a Drizzle driver ([Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.1.0.md))
 
 ## Contents
 
