@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:12-08:00 (1795642212)
+ *	@Last modified time: 2026-11-25T19:16:34-08:00 (1795662994)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -18,7 +18,7 @@
  * while it downloads. The Node loader (loader.mts) reads the file with node:fs instead; both produce a
  * `WebAssembly.Module` for `instantiateSqlite()`.
  *
- * The default location is written as `new URL("./sqlite3.wasm", import.meta.url)` on purpose: Vite, webpack and
+ * The default location is written as `new URL("../sqlite3.wasm", import.meta.url)` on purpose: Vite, webpack and
  * Parcel recognise that exact pattern and emit the wasm as an asset next to the bundle. When a bundler doesn't, or
  * the file is served from somewhere else, pass its URL (or the bytes, a Response or a compiled module) instead.
  */
@@ -29,9 +29,9 @@ export type source = string | URL | Response | ArrayBuffer | ArrayBufferView | W
 /** The fetch function `load()` uses; injectable for tests. */
 export type fetcher = (url: URL) => Promise<Response>;
 
-/** Default locations, in order: next to the bundle, then dist/ from src/core/ in a checkout. */
+/** Default locations, in order: dist/sqlite3.wasm from dist/core/ in the package, then from src/core/ in a checkout. */
 export function candidates(): URL[] {
-	return [new URL("./sqlite3.wasm", import.meta.url), new URL("../../dist/sqlite3.wasm", import.meta.url)];
+	return [new URL("../sqlite3.wasm", import.meta.url), new URL("../../dist/sqlite3.wasm", import.meta.url)];
 }
 
 /** Compiles a fetched response, streaming when the server sends the wasm MIME type. */

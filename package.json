@@ -1,6 +1,6 @@
 {
 	"name": "@cldmv/sqlite-wasm",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "SQLite compiled to WebAssembly for Node.js and browsers, with file storage on disk and in OPFS",
 	"type": "module",
 	"license": "Apache-2.0",
@@ -84,7 +84,7 @@
 				"import": "./src/worker/host.mts"
 			},
 			"types": "./types/src/worker/host.d.mts",
-			"import": "./dist/host.mjs"
+			"import": "./dist/worker/host.mjs"
 		},
 		"./worker": {
 			"sqlite-wasm-dev": {
@@ -92,7 +92,7 @@
 				"import": "./src/worker/client.mts"
 			},
 			"types": "./types/src/worker/client.d.mts",
-			"import": "./dist/worker.mjs"
+			"import": "./dist/worker/client.mjs"
 		},
 		"./drizzle": {
 			"sqlite-wasm-dev": {
@@ -124,7 +124,7 @@
 		}
 	},
 	"scripts": {
-		"build": "tsup && npm run build:wasm",
+		"build": "node scripts/build-js.mjs && npm run build:wasm",
 		"build:wasm": "node scripts/build-wasm.mjs",
 		"build:ci": "npm run lint && npm run format:check && npm run types:check && npm run types:build && npm run build",
 		"sqlite:bump": "node scripts/bump-sqlite.mjs",
@@ -168,11 +168,11 @@
 		"@vitest/coverage-v8": "^5.1.1",
 		"drizzle-kit": "^0.31.11",
 		"drizzle-orm": "^0.45.4",
+		"esbuild": "^0.28.2",
 		"eslint": "^10.15.0",
 		"globals": "^17.14.0",
 		"playwright": "^1.65.1",
 		"prettier": "^3.10.1",
-		"tsup": "^9.0.0",
 		"typescript": "^6.0.3",
 		"typescript-eslint": "^8.74.0",
 		"vitest": "^5.1.1"

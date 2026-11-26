@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:16-08:00 (1795642216)
+ *	@Last modified time: 2026-11-25T19:16:36-08:00 (1795662996)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -16,7 +16,7 @@
 /**
  * The entries share their modules instead of bundling a copy each: an error from the worker client is an instance of
  * the class the main entry exports. Under `npm run test:dist` the package names resolve to dist/, where this only
- * holds because the build splits shared code into chunks; in the normal run they resolve to src/.
+ * holds because each module is built once and the entries import it; in the normal run they resolve to src/.
  */
 import sqlite from "@cldmv/sqlite-wasm";
 import host from "@cldmv/sqlite-wasm/host";

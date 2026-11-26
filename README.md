@@ -17,13 +17,14 @@ The module is built from SQLite's own source archive with wasi-sdk, with no Emsc
 
 ## ✨ What's New
 
-### Latest: v0.2.0 (November 2026)
+### Latest: v0.2.1 (November 2026)
 
-- **`bytes()` for Drizzle** — a blob column that holds a plain `Uint8Array` and never touches `Buffer`, so browser apps can store binary data through Drizzle without a polyfill. Existing `blob` columns can switch to it with no migration. The release also adds a [design document](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/DESIGN.md).
-- [View full v0.2.0 Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.2.0.md)
+- **One file per module in `dist/`** — the build no longer bundles: `dist/` mirrors `src/`, each module minified in place, instead of four bundles sharing hashed `chunk-*.mjs` files. Same API, same import names, same wasm.
+- [View full v0.2.1 Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.2.1.md)
 
 ### Recent Releases
 
+- **v0.2.0** (November 2026) — `bytes()` blob column for Drizzle that needs no `Buffer`, plus a design document ([Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.2.0.md))
 - **v0.1.0** (November 2026) — First release: SQLite 3.54.1 in WebAssembly for Node.js and browsers, with OPFS, multi-tab sharing and a Drizzle driver ([Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.1.0.md))
 
 ## Contents
@@ -537,7 +538,7 @@ All connections in a process share one module instance, which is what lets `ATTA
 
 ## Development
 
-The source is TypeScript (`src/**/*.mts`) and the package ships built `dist/`. The wasm is built from source by `npm run build` (tsup, then `scripts/build-wasm.mjs`), which downloads pinned versions of SQLite's source archive, wasi-sdk and binaryen into `.cache/toolchains/` (override with `SQLITE_WASM_TOOLCHAIN_DIR`). The pins and hashes are in `sqlite.version.json`, and `npm run sqlite:bump` updates the SQLite pin. Generating the amalgamation needs `make` and a C compiler (`cc`, or `$CC`) on the build machine, which Linux and macOS have; nothing else, since the archive carries its own Tcl interpreter. The built `dist/sqlite3.wasm` is what gets published, so consumers need none of this.
+The source is TypeScript (`src/**/*.mts`) and the package ships built `dist/`. The wasm is built from source by `npm run build` (`scripts/build-js.mjs`, then `scripts/build-wasm.mjs`), which downloads pinned versions of SQLite's source archive, wasi-sdk and binaryen into `.cache/toolchains/` (override with `SQLITE_WASM_TOOLCHAIN_DIR`). The pins and hashes are in `sqlite.version.json`, and `npm run sqlite:bump` updates the SQLite pin. Generating the amalgamation needs `make` and a C compiler (`cc`, or `$CC`) on the build machine, which Linux and macOS have; nothing else, since the archive carries its own Tcl interpreter. The built `dist/sqlite3.wasm` is what gets published, so consumers need none of this.
 
 To run from `src/` without building, resolve the `sqlite-wasm-dev` export condition, which points every entry at its `.mts` source:
 

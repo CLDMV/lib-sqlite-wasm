@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:16-08:00 (1795642216)
+ *	@Last modified time: 2026-11-25T19:16:36-08:00 (1795662996)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -45,9 +45,10 @@ beforeAll(() => {
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 describe("loader", () => {
-	it("looks for sqlite3.wasm next to the bundle, then in dist/ from src/core/", () => {
-		const [bundle, checkout] = wasmCandidates("file:///pkg/src/core/loader.mts");
-		expect(bundle.pathname).toBe("/pkg/src/core/sqlite3.wasm");
+	it("looks for dist/sqlite3.wasm from dist/core/ first, then from src/core/ in a checkout", () => {
+		expect(wasmCandidates("file:///pkg/dist/core/loader.mjs")[0].pathname).toBe("/pkg/dist/sqlite3.wasm");
+		const [packaged, checkout] = wasmCandidates("file:///pkg/src/core/loader.mts");
+		expect(packaged.pathname).toBe("/pkg/src/sqlite3.wasm");
 		expect(checkout.pathname).toBe("/pkg/dist/sqlite3.wasm");
 	});
 
@@ -56,7 +57,7 @@ describe("loader", () => {
 	});
 
 	it("passes on read errors other than a missing file", async () => {
-		await expect(readWasm(new URL("with-dir/loader.mjs", scratch))).rejects.toMatchObject({ code: "EISDIR" });
+		await expect(readWasm(new URL("with-dir/core/loader.mjs", scratch))).rejects.toMatchObject({ code: "EISDIR" });
 	});
 
 	it("compiles the package's module once", async () => {
