@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:17-08:00 (1795642217)
+ *	@Last modified time: 2026-11-25T18:24:26-08:00 (1795659866)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -85,7 +85,7 @@ describe("drizzle on a synchronous database", () => {
 		migrate(db, bundled);
 		migrate(db, bundled);
 		expect(db.all(sql`select name from pragma_table_info('posts') order by cid`).map((row) => row.name)).toContain("published");
-		expect(db.values(sql`select count(*) from __drizzle_migrations`)).toEqual([[2]]);
+		expect(db.values(sql`select count(*) from __drizzle_migrations`)).toEqual([[bundled.journal.entries.length]]);
 		close();
 	});
 
@@ -94,7 +94,7 @@ describe("drizzle on a synchronous database", () => {
 		const db = drizzle(raw, { schema });
 		apply(db);
 		migrate(db, bundled);
-		expect(db.values(sql`select count(*) from __drizzle_migrations`)).toEqual([[2]]);
+		expect(db.values(sql`select count(*) from __drizzle_migrations`)).toEqual([[bundled.journal.entries.length]]);
 		close();
 	});
 

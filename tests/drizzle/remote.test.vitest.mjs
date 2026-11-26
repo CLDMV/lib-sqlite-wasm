@@ -7,7 +7,7 @@
  *	@Email: <Shinrai@users.noreply.github.com>
  *	-----
  *	@Last modified by: Nate Corcoran <CLDMV> (Shinrai@users.noreply.github.com)
- *	@Last modified time: 2026-11-25T13:30:17-08:00 (1795642217)
+ *	@Last modified time: 2026-11-25T18:24:26-08:00 (1795659866)
  *	-----
  *	@Copyright: Copyright (c) 2013-2026 Catalyzed Motivation Inc. All rights reserved.
  *
@@ -230,7 +230,7 @@ describe("drizzle over the worker client: migrations and the plain proxy", () =>
 		await migrate(db, bundled);
 		await migrate(db, bundled);
 		expect((await db.values(sql`select name from pragma_table_info('posts')`)).map((row) => row[0])).toContain("published");
-		expect(await db.values(sql`select count(*) from __drizzle_migrations`)).toEqual([[2]]);
+		expect(await db.values(sql`select count(*) from __drizzle_migrations`)).toEqual([[bundled.journal.entries.length]]);
 		await close();
 	});
 
