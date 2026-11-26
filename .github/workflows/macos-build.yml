@@ -1,0 +1,37 @@
+# Temporary: checks the wasm build and the Node test suite on macOS (Apple Silicon and Intel). Not for merging.
+name: 🍎 macOS build check
+
+on:
+    push:
+        branches: [test/macos-build]
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: "🍎 ${{ matrix.os }}"
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [macos-latest, macos-15-intel]
+        runs-on: ${{ matrix.os }}
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24
+            - name: Toolchain
+              run: uname -a && make --version | head -1 && cc --version | head -1 && tar --version | head -1
+            - run: npm ci
+            - name: Build (tsup + wasm from the SQLite source archive)
+              run: npm run build
+            - name: Smoke test
+              run: |
+                  node --input-type=module -e '
+                  import sqlite from "./dist/index.mjs";
+                  const db = await sqlite.open("smoke.sqlite3");
+                  db.exec("create table t (a); insert into t values (1),(2); delete from t order by a limit 1");
+                  console.log(db.prepare("select sqlite_version() v, count(*) n from t").get(), db.pragma("journal_mode", { simple: true }));
+                  db.close();'
+            - run: npm test
