@@ -257,6 +257,10 @@ jobs:
             lint_command: ${{ github.event.inputs.lint_command || 'npm run lint --if-present' }}
             format_check_command: ${{ github.event.inputs.format_check_command || 'npm run format:check --if-present' }}
             build_command: "npm run build:ci"
+            # Build-and-test legs on other runner OSes (JSON list of runner labels). The wasm build uses
+            # per-platform wasi-sdk and binaryen downloads plus the host make and cc, so it needs a standing
+            # macOS check (verified on macos-latest and macos-15-intel; see docs/DESIGN.md).
+            extra_build_os: '["macos-latest", "macos-15-intel"]'
             # Browser suite (Chromium via @vitest/browser) runs once on lts/* as its own job, after the
             # coverage_build_command build. test:browser installs chromium-headless-shell itself.
             browser_test_command: "npm run test:browser"
