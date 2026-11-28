@@ -17,13 +17,14 @@ The module is built from SQLite's own source archive with wasi-sdk, with no Emsc
 
 ## ✨ What's New
 
-### Latest: v0.2.2 (November 2026)
+### Latest: v0.2.3 (November 2026)
 
-- **CI builds and tests on macOS** — the wasm build now has a standing check on Apple Silicon and Intel. CI only; no runtime code changed.
-- [View full v0.2.2 Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.2.2.md)
+- **CI cancels superseded runs on `next` and `hotfixes`** — a newer push now replaces the older run instead of every run finishing. CI only; no runtime code changed.
+- [View full v0.2.3 Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.2.3.md)
 
 ### Recent Releases
 
+- **v0.2.2** (November 2026) — CI builds and tests on macOS, on Apple Silicon and Intel; no runtime code changes ([Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.2.2.md))
 - **v0.2.1** (November 2026) — `dist/` is one minified file per source module instead of hashed chunks; same API ([Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.2.1.md))
 - **v0.2.0** (November 2026) — `bytes()` blob column for Drizzle that needs no `Buffer`, plus a design document ([Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.2.0.md))
 - **v0.1.0** (November 2026) — First release: SQLite 3.54.1 in WebAssembly for Node.js and browsers, with OPFS, multi-tab sharing and a Drizzle driver ([Changelog](https://github.com/CLDMV/lib-sqlite-wasm/blob/master/docs/changelog/v0/v0.1.0.md))
