@@ -18,6 +18,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const dist = path.resolve(__dirname, "..", "..", "dist");
 
@@ -25,6 +26,18 @@ const dist = path.resolve(__dirname, "..", "..", "dist");
 test("dist/drizzle.cjs re-exports dist/drizzle.mjs", () => {
 	const cjs = require(path.join(dist, "drizzle.cjs"));
 	assert.deepEqual(Object.keys(cjs).sort(), ["bytes", "drizzle", "migrate"]);
+});
+
+test("dist/drizzle.cjs returns the same keys and values as import", async () => {
+	const esm = await import(pathToFileURL(path.join(dist, "drizzle.mjs")).href);
+	const cjs = require(path.join(dist, "drizzle.cjs"));
+	assert.equal(typeof cjs, "object");
+	const keys = (value) =>
+		Object.keys(value)
+			.filter((key) => key !== "__esModule")
+			.sort();
+	assert.deepEqual(keys(cjs), keys(esm));
+	for (const key of keys(esm)) assert.equal(cjs[key], esm[key], `${key} is a different value`);
 });
 
 test("dist/drizzle.cjs drives a database opened through dist/index.cjs", async () => {

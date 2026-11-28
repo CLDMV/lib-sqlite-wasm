@@ -13,6 +13,15 @@
  *
  */
 
+/**
+ * @fileoverview CommonJS entry point: the generic CLDMV drop-in shim
+ * (CLDMV/.github docs/conventions/package-layout.md).
+ *
+ * It returns what `import` gives. The package exports several distinct values, so
+ * `require("@cldmv/sqlite-wasm")` is the module object (`{ default, open, error, err }`).
+ * The build copies it verbatim into dist/, where `./index.mjs` resolves to the built entry.
+ * @module sqlite-wasm/cjs-entry
+ */
 "use strict";
 
 if (!process.features?.require_module) {
@@ -23,4 +32,12 @@ if (!process.features?.require_module) {
 	throw error;
 }
 
-module.exports = require("./index.mjs");
+// Same exports as `import`. One distinct exported value (aliases of it count once) comes back as that value,
+// so require(x)(...) works; anything else comes back as the module object ({ default, ...named }).
+const esm = require("./index.mjs");
+const values = new Set(
+	Object.keys(esm)
+		.filter((key) => key !== "__esModule")
+		.map((key) => esm[key])
+);
+module.exports = values.size === 1 ? values.values().next().value : esm;
